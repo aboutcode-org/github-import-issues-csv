@@ -1,0 +1,5 @@
+Title,Assignee,Status,Priority,Estimate,Size,Iteration
+"Set up monorepo structure using Nx","Self","Backlog","P0",4,"S","Oct 21 - Nov 03"
+"Initialize Git repository and connect to GitHub","Self","Backlog","P0",2,"XS","Oct 21 - Nov 03"
+"Install dependencies for front-end and back-end","Self","Backlog","P0",3,"S","Oct 21 - Nov 03"
+"Configure TypeScript settings for consistency","Self","Backlog","P1",2,"XS","Oct 21 - Nov 03"
