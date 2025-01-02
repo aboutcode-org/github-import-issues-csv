@@ -1,5 +1,32 @@
-Title,Assignee,Status,Priority,Estimate,Size,Iteration
-"Set up monorepo structure using Nx","Self","Backlog","P0",4,"S","Oct 21 - Nov 03"
-"Initialize Git repository and connect to GitHub","Self","Backlog","P0",2,"XS","Oct 21 - Nov 03"
-"Install dependencies for front-end and back-end","Self","Backlog","P0",3,"S","Oct 21 - Nov 03"
-"Configure TypeScript settings for consistency","Self","Backlog","P1",2,"XS","Oct 21 - Nov 03"
+meta_issue_id,sub_issue_id,account_type,account_name,repo_name,project_number,title,body,project_estimate
+gizmo,,organization,allthelibraries,test-repo-issues2,1,Create gizmo application,"The goal of this main issue is to create a new gizmo app.
+There are multiple items we need to  complete for that:",0
+gizmo,a,organization,allthelibraries,test-repo-issues1,1,Design Gizmo data model,"A gizmo has two fields as follow:
+- [ ] foo
+- [ ] bar
+",2
+gizmo,b,organization,allthelibraries,test-repo-issues2,1,Create Gizmo back-end,We need to create a backend with a rest API,3
+gizmo,c,organization,allthelibraries,test-repo-issues2,1,Create Gizmo front-end UI,We need to create a frontend with a web UI,4
+bidule,,organization,allthelibraries,test-repo-issues1,1,Create bidule application,"The goal of this main issue is to create a new bidule app.
+There are multiple items we need to  complete for that:",0
+bidule,d,organization,allthelibraries,test-repo-issues1,1,Design bidule data model,"A bidule has two fields as follow:
+- [ ] foo
+- [ ] bar
+",5
+bidule,d,organization,allthelibraries,test-repo-issues2,1,Create bidule back-end,We need to create a backend with a rest API,6
+bidule,f,organization,allthelibraries,test-repo-issues2,1,Create bidule front-end UI,We need to create a frontend with a web UI,7
+,,organization,allthelibraries,test-repo-issues2,,"Plain issue, no project",Plain,
+,,organization,allthelibraries,test-repo-issues2,2,"Plain issue, in project 2",Plain 2,9
+meta,,organization,allthelibraries,test-repo-issues2,2,"Meta issue, in project 2, no sub",Plain 3,10
+metasub,,organization,allthelibraries,test-repo-issues2,,"Meta issue, NO project with sub",Meta plain,
+metasub,subissue,organization,allthelibraries,test-repo-issues2,,"Sub issue, NO project with sub",Sub plain,
+truc,,organization,allthelibraries,test-repo-issues1,,Create truc application NO project ,"The goal of this main issue is to create a new truc app.
+There are multiple items we need to  complete for that:",
+truc,d,organization,allthelibraries,test-repo-issues1,,Design truc data model NO project ,"A truc has two fields as follow:
+- [ ] foo
+- [ ] bar
+",
+truc,d,organization,allthelibraries,test-repo-issues2,,Create truc back-end NO project ,We need to create a backend with a rest API,
+truc,f,organization,allthelibraries,test-repo-issues2,,Create truc front-end UI NO project ,We need to create a frontend with a web UI,
+,,,,12,,,,
+,,,,5,,,,
