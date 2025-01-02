@@ -35,7 +35,7 @@ Not supported: Nothing not listed above.
 
 ### Getting started
 
-### Prerequisites
+#### Prerequisites
 
 - Python 3.x installed on your system.
 - A GitHub personal access token with `repo` permissions exported as a GITHUB_TOKEN variable
@@ -53,7 +53,7 @@ Then run the script this way::
 You need to have pre-existing repositories and projects created in GitHub.
 
 
-### CSV File Format
+#### CSV File Format
 
 See the issues.csv for an example.
 
@@ -69,7 +69,7 @@ Core fields:
 - body: required, GitHub issue body.
 
 
-Optional Project support:
+##### Optional Project support:
 
 - project_number: optional for projects, GitHub project number in the "account_name". The issue
   will be added to this project.
@@ -80,7 +80,7 @@ Optional Project fields support:
   This is used to populate an "Estimate" custom project field that needs to be created first as
   a "number" field in the Project.
 
-Optional Meta issues support:
+##### Optional Meta issues support:
 
 We can import plain issues as well as "meta issues". A meta issue body contains a bulleted list of
 checkboxes with links to all its "sub issues". GitHub recognizes these links as "tasks".
