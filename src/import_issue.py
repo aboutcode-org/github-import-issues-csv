@@ -37,8 +37,9 @@ Then run this way::
 
     python src/import_issues.py --help
 
-You need to have pre-existing repositories and projects created in GitHub.
-
+You need to have:
+- pre-existing repositories and projects created in GitHub, with optional fields if needed,
+- a proper token exported in a GITHUB_TOKEN environment variable with repo and project scope
 
 The CSV has these columns:
 
@@ -85,7 +86,7 @@ With meta issues, a row can have:
 
 For meta issues, the body will be extended with a bulleted list of links to sub issues.
 
-If the project has an IssueID custom field:
+If the GitHub project has an IssueID custom field:
 - For meta issues, the IssueID is updated with "meta_issue_id" value
 - For sub issues, the IssueID is updated with the combined values of "meta_issue_id-sub_issue_id"
 """
