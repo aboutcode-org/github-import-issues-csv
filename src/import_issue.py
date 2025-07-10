@@ -115,7 +115,7 @@ auth_headers = {
 
 # Rate limiter settings
 # Maximum number of requests allowed within the time frame
-RATE_LIMIT_MAX_REQUESTS = 60
+RATE_LIMIT_MAX_REQUESTS = 40
 # Time frame for rate limiting in seconds
 RATE_LIMIT_TIME_FRAME = 60
 
@@ -131,13 +131,11 @@ class RateLimiter:
         self.requests = []
 
     def wait(self):
-        time.sleep(0.5)
         now = time.time()
         if len(self.requests) >= self.max_requests:
             wait_time = self.time_frame - (now - self.requests[0])
             if wait_time > 0:
-                if wait_time > 0.01:
-                    click.echo(f"\n==> Rate limiter waiting: {wait_time:.2f} seconds")
+                click.echo(f"\n==> Rate limiter: waiting: {wait_time:.2f} seconds")
                 time.sleep(wait_time)
             self.requests = [r for r in self.requests if now - r <= self.time_frame]
         self.requests.append(now)
@@ -155,7 +153,7 @@ def handle_rate_limit(response):
     if response.status_code in (403, 429):
         reset_time = int(response.headers.get('x-ratelimit-reset', 0))
         current_time = int(time.time())
-        sleep_time = max(reset_time - current_time, 60)
+        sleep_time = min(reset_time - current_time, 120)
         click.echo(f"\n==> Rate limit exceeded. Waiting for {sleep_time} seconds before retrying")
         check_rate_limit_status(response)
         time.sleep(sleep_time)
@@ -182,7 +180,7 @@ def check_rate_limit_status(response):
 
     if all([limit, remaining, used, reset, resource]):
         reset_time = datetime.fromtimestamp(int(reset)).strftime('%Y-%m-%d %H:%M:%S')
-        click.echo(f"\nRate Limit Status:{used} of {limit}/{remaining} Reset Time: {reset_time} Resource: {resource}")
+        click.echo(f"\nRate Limit Status: used: {used}: remaining: {remaining}/{limit}/ Reset Time: {reset_time} Resource: {resource}")
     else:
         click.echo("Rate limit information not available in the response headers.")
 
@@ -272,8 +270,9 @@ class Issue:
             throttled = handle_rate_limit(response)
             if throttled and retries < 2:
                 retries += 1
+                click.echo(f"Request failed: {response} retrying: {retries}")
                 self.create(headers=headers, retries=retries)
-
+                return
         except Exception as e:
             raise Exception(
                 f"Failed to create issue: {self!r}\n\n"
@@ -386,8 +385,8 @@ def graphql_query(query, variables=None, headers=auth_headers, retries=0):
         throttled = handle_rate_limit(response)
         if throttled and retries < 2:
             retries += 1
+            click.echo(f"Request failed: {response} retrying: {retries}")
             graphql_query(query=query, variables=variables, headers=headers, retries=retries)
-            time.sleep(2)
     except Exception as e:
         raise Exception(
             f"Failed to post GraphQL query with request: {request_data}\n\n"
