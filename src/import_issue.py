@@ -291,30 +291,35 @@ class Issue:
         """
         Add this issue to its project, if this issue has a "project_number".
         If ``update_fields`` is True, also sets custom project field values if present.
-        This includes the estimate and task_number
+        This includes the estimate and issueid
         """
         assert self.number, f"Issue: {self.title} must be created first at GitHub"
-        if project := self.get_project():
-            project.add_issue(self)
-            if update_fields:
-                # make only a single grphql request to update both fields
-                combined_update = True
-                if combined_update:
-                    update_project_issue_fields(
-                        project=project,
-                        item_id=self.project_item_id,
-                        estimate=self.project_estimate or 0,
-                        issueid=self.project_issue_id,
-                    )
+        project = self.get_project()
+        if not project:
+            return
 
-                else:
-                    # Update estimate field, if present
-                    if estimate := self.project_estimate:
-                        project.update_number_field(item_id=self.project_item_id, field_name="Estimate", value=estimate)
+        project.add_issue(self)
+        if not update_fields:
+            return
 
-                    # Update IssueID if we have meta/sub issues id fields
-                    if issue_id := self.project_issue_id:
-                        project.update_text_field(item_id=self.project_item_id, field_name="IssueID", value=issue_id)
+        # make only a single graphql request to update both fields
+        combined_update = True
+        if combined_update:
+            update_project_issue_fields(
+                project=project,
+                item_id=self.project_item_id,
+                estimate=self.project_estimate or 0,
+                issueid=self.project_issue_id,
+            )
+
+        else:
+            # Update estimate field, if present
+            if estimate := self.project_estimate:
+                project.update_number_field(item_id=self.project_item_id, field_name="Estimate", value=estimate)
+
+            # Update IssueID if we have meta/sub issues id fields
+            if issue_id := self.project_issue_id:
+                project.update_text_field(item_id=self.project_item_id, field_name="IssueID", value=issue_id)
 
     def get_project(self):
         """
@@ -349,6 +354,25 @@ class Issue:
 
 @dataclasses.dataclass(kw_only=True)
 class MetaIssue(Issue):
+    """
+    A meta issue is an issue with a body that contains a bulleted list of sub issues URLs, that
+    GitHub interprets as "tasks".
+    """
+
+    issues: List[Issue] = dataclasses.field(default_factory=list)
+
+    def get_body(self):
+        sub_issues_lines = "\n".join([f"- [ ] {i.url}" for i in self.issues])
+        body = f"{self.body}\n\n{sub_issues_lines}\n"
+        return body
+
+    @property
+    def project_issue_id(self):
+        return self.meta_issue_id
+
+
+@dataclasses.dataclass(kw_only=True)
+class PlainIssue(Issue):
     """
     A meta issue is an issue with a body that contains a bulleted list of sub issues URLs, that
     GitHub interprets as "tasks".
