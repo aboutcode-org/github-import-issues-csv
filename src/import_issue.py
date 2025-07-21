@@ -134,7 +134,6 @@ class RateLimiter:
 
     def wait(self):
         # wait always a little to avoid hitting secondary rate limits
-        time.sleep(0.1)
         now = time.time()
         if len(self.requests) >= self.max_requests:
             wait_time = self.time_frame - (now - self.requests[0])
@@ -252,7 +251,20 @@ class Issue:
         """Return the body. Subclasses can override"""
         return self.body
 
-    def create(self, headers=auth_headers, retries=0):
+    def get_fields_as_labels(self):
+        """
+        Return a list of labels constructed from the fields for issue id, parent id and estimate
+        """
+        labels = []
+        if project_estimate := self.project_estimate:
+            labels.append(f"estimate:{project_estimate}")
+        if project_issue_id := self.project_issue_id:
+            labels.append(f"issue_id:{project_issue_id}")
+        # if project_parent_issue_id := self.project_parent_issue_id:
+        #     labels.append(f"parent_id:{project_parent_issue_id}")
+        return labels
+
+    def create(self, headers=auth_headers, retries=0, create_labels_for_fields=False):
         """
         Create issue at GitHub and update thyself.
         NB: this does not check if the same issue already exists.
@@ -260,7 +272,11 @@ class Issue:
         rate_limiter.wait()
         api_url = f"https://api.github.com/repos/{self.account_name}/{self.repo_name}/issues"
         request_data = {"title": self.title, "body": self.get_body()}
-        if labels := self.labels:
+        labels = self.labels or []
+        if create_labels_for_fields:
+            labels.extend(self.get_fields_as_labels())
+
+        if labels:
             request_data["labels"] = labels
 
         response = requests.post(url=api_url, headers=headers, json=request_data)
@@ -270,7 +286,11 @@ class Issue:
             if throttled and retries < 2:
                 retries += 1
                 click.echo(f"Request failed: {response} retrying: {retries}")
-                self.create(headers=headers, retries=retries)
+                self.create(
+                    headers=headers,
+                    retries=retries,
+                    create_labels_for_fields=create_labels_for_fields,
+                )
                 return
         except Exception as e:
             raise Exception(
@@ -309,7 +329,7 @@ class Issue:
     def fail_if_not_created(self):
         assert self.number, f"Issue: {self.title} must be created first at GitHub"
 
-    def add_to_project(self, _update_fields=True, _combined_update=True):
+    def add_to_project(self, create_labels_for_fields=False, _combined_update=True):
         """
         Add this issue to its project, if this issue has a "project_number".
         Update project fields: estimate, issue_id and parent_issue_id
@@ -320,7 +340,9 @@ class Issue:
             return
 
         project.add_issue(issue=self)
-        if not _update_fields:
+
+        # stop now if we are not using project fields
+        if create_labels_for_fields:
             return
 
         # make only a single graphql request to update all fields at once
@@ -356,6 +378,19 @@ class Issue:
                 account_type=self.account_type,
                 account_name=self.account_name,
             )
+
+    def create_issue_and_add_to_project(self, create_labels_for_fields=False):
+        """
+        Create this Issue at GitHub and add to project.
+        """
+        self.create(create_labels_for_fields=create_labels_for_fields)
+        click.echo(f"Created Issue: URL: {self.url} - {self.title} ", nl="")
+        project = self.get_project()
+        if project:
+            self.add_to_project(create_labels_for_fields=create_labels_for_fields)
+            click.echo(f"... and added to Project: {project.url}")
+        else:
+            click.echo("")
 
     @classmethod
     def from_data(cls, data):
@@ -950,17 +985,6 @@ def dump_csv_sample(ctx, param, value):
     ctx.exit()
 
 
-def create_issue_and_add_to_project(issue):
-    issue.create()
-    click.echo(f"Created Issue: URL: {issue.url} - {issue.title} ", nl="")
-    project = issue.get_project()
-    if project:
-        issue.add_to_project()
-        click.echo(f"... and added to Project: {project.url}")
-    else:
-        click.echo("")
-
-
 @click.command()
 @click.pass_context
 @click.option(
@@ -980,6 +1004,11 @@ def create_issue_and_add_to_project(issue):
     help="Maximum number of issues to import. Default to zero to import all issues in FILE.",
 )
 @click.option(
+    "--create-labels-for-fields",
+    is_flag=True,
+    help="Create issues labels instead of project/issue fields for Estimate/IssueID/ParentIssueID.",
+)
+@click.option(
     "--csv-sample",
     is_flag=True,
     is_eager=True,
@@ -988,7 +1017,7 @@ def create_issue_and_add_to_project(issue):
     help='Dump a sample CSV on screen and exit. See also the "issues.csv" file',
 )
 @click.help_option("-h", "--help")
-def import_issues_in_github(ctx, issues_file, max_import=0):
+def import_issues_in_github(ctx, issues_file, max_import=0, create_labels_for_fields=False):
     """
     Import issues in GitHub as listed in the CSV FILE.
 
@@ -1009,12 +1038,11 @@ def import_issues_in_github(ctx, issues_file, max_import=0):
     else:
         click.echo(f"Importing {len(issues)} issues in GitHub")
 
-    issues_by_project_id = defaultdict(list)
     for issue in issues:
-        create_issue_and_add_to_project(issue)
-        project_issue_id = issue.project_issue_id
-        if project_issue_id:
-            issues_by_project_id[project_issue_id].append(issue)
+        issue.create_issue_and_add_to_project(
+            issue=issue,
+            create_labels_for_fields=create_labels_for_fields,
+        )
 
     click.echo("Creating sub issues")
     # once all issues are created we can create subissues
