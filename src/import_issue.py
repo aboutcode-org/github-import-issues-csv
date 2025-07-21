@@ -96,6 +96,7 @@ import dataclasses
 import os
 import time
 
+from collections import defaultdict
 from datetime import datetime
 from typing import Dict
 from typing import List
@@ -114,7 +115,7 @@ auth_headers = {
     "User-Agent": "AbouCode.org-issuer"
 }
 
-# Rate limiter settings
+# Rate limiter settingsissue_id
 # Maximum number of requests allowed within the time frame
 RATE_LIMIT_MAX_REQUESTS = 40
 # Time frame for rate limiting in seconds
@@ -132,6 +133,8 @@ class RateLimiter:
         self.requests = []
 
     def wait(self):
+        # wait always a little to avoid hitting secondary rate limits
+        time.sleep(0.1)
         now = time.time()
         if len(self.requests) >= self.max_requests:
             wait_time = self.time_frame - (now - self.requests[0])
@@ -181,7 +184,8 @@ def check_rate_limit_status(response):
 
     if all([limit, remaining, used, reset, resource]):
         reset_time = datetime.fromtimestamp(int(reset)).strftime('%Y-%m-%d %H:%M:%S')
-        click.echo(f"\nRate Limit Status: used: {used}: remaining: {remaining}/{limit}/ Reset Time: {reset_time} Resource: {resource}")
+        if not int(used) % 10:
+            click.echo(f"Rate Limit Status: used: {used}: remaining: {remaining}/{limit}/ Reset Time: {reset_time} Resource: {resource}")
     else:
         click.echo("Rate limit information not available in the response headers.")
 
@@ -189,37 +193,46 @@ def check_rate_limit_status(response):
 @dataclasses.dataclass(kw_only=True)
 class Issue:
     """
-    A GitHub issue with is ttitle and body.
+    A GitHub issue with is title and body.
     """
 
     # Do not set: the issue number, automatically set upon creation
     number: int = 0
     # Do not set: used in graphql, automatically set upon creation
-    issue_id: str = ""
+    issue_node_id: str = ""
 
     # Required
     title: str = ""
     body: str = ""
+
     # one of user or organization
     account_type: str = "organization"
     account_name: str = ""
     repo_name: str = ""
 
+    # list of label strings
+    labels: list["str"] = dataclasses.field(default_factory=list)
+
     # Optional fields, if we add the issue to a GitHub project
     project_number: int = 0
-    project_estimate: int = 0
 
     # Do not set: used in graphql, automatically set upon creation
     project_item_id: str = ""
 
     # Optional:
-    # an arbitrary string used to identify and relate to a meta issue:
-    # - if this is an Issue instance, we will add the issue to a MetaIssue with this identifier
-    # - if this is a MetaIssue instance, that's the MetaIssue identifier
-    meta_issue_id: str = ""
+    project_estimate: int = 0
 
-    # Optional: number to track related issues with structured issues number
-    sub_issue_id: str = ""
+    # Optional:
+    # an arbitrary string used to identify this issue is this project( note the same as the issue id e.g., its number)
+    project_issue_id: str = ""
+
+    # Optional:
+    # an arbitrary string used to identify a parent "project_issue_id" for this issue.
+    # This issue will be added to the parent as subissue id.
+    project_parent_issue_id: str = ""
+    #
+    # Do not set: used for sub issues, automatically populated. The value is a project_issue_id
+    project_subissue_ids: List[str] = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         assert self.title, f"Missing title: {self!r}"
@@ -228,25 +241,8 @@ class Issue:
         assert self.account_name, f"Missing account name: {self!r}"
         assert self.repo_name, f"Missing repo name: {self!r}"
 
-        if self.project_estimate:
+        if any([self.project_estimate, self.project_issue_id, self.project_parent_issue_id]):
             assert self.project_number
-
-        if not self.meta_issue_id:
-            assert not self.sub_issue_id
-
-        if self.sub_issue_id:
-            assert self.meta_issue_id
-
-    @property
-    def project_issue_id(self):
-        if self.meta_issue_id:
-            return f"{self.meta_issue_id}-{self.sub_issue_id}"
-        else:
-            return ""
-
-    @property
-    def is_sub_issue(self):
-        return bool(self.meta_issue_id and self.sub_issue_id)
 
     @property
     def url(self):
@@ -259,11 +255,13 @@ class Issue:
     def create(self, headers=auth_headers, retries=0):
         """
         Create issue at GitHub and update thyself.
-        NB: this does not check if the same issue exists.
+        NB: this does not check if the same issue already exists.
         """
         rate_limiter.wait()
         api_url = f"https://api.github.com/repos/{self.account_name}/{self.repo_name}/issues"
         request_data = {"title": self.title, "body": self.get_body()}
+        if labels := self.labels:
+            request_data["labels"] = labels
 
         response = requests.post(url=api_url, headers=headers, json=request_data)
 
@@ -276,50 +274,77 @@ class Issue:
                 return
         except Exception as e:
             raise Exception(
-                f"Failed to create issue: {self!r}\n\n"
-                f"with request: {request_data}\n\n"
-                f"and response: {response}"
+                f"Failed to create issue: {self!r}\n"
+                f"  with api_url: {api_url}\n"
+                f"  with request: {request_data}\n"
+                f"  and response: {response}"
             ) from e
 
         check_rate_limit_status(response)
 
         results = response.json()
         self.number = results["number"]
-        self.issue_id = results["node_id"]
+        # this is needed for further GraphQL queries and mutations
+        self.issue_node_id = results["node_id"]
 
-    def add_to_project(self, update_fields=True):
+    def add_subissue(self, subissue, headers=auth_headers, retries=0):
+        """
+        Add Issue ``subissue`` as a subissue of this Issue.
+        Both issues must have been created first.
+        NB: this does not check if the same issue already exists.
+        """
+        self.fail_if_not_created()
+        subissue.fail_if_not_created()
+
+        variables = {"issue_node_id": self.issue_node_id, "subissue_node_id": subissue.issue_node_id}
+
+        query = """mutation($issue_node_id:ID!, $subissue_node_id:ID!) {
+            addSubIssue(input: {issueId: $issue_node_id, subIssueId: $subissue_node_id}) {
+                clientMutationId
+            }
+        }
+        """
+        graphql_query(query=query, variables=variables)
+
+    def fail_if_not_created(self):
+        assert self.number, f"Issue: {self.title} must be created first at GitHub"
+
+    def add_to_project(self, _update_fields=True, _combined_update=True):
         """
         Add this issue to its project, if this issue has a "project_number".
-        If ``update_fields`` is True, also sets custom project field values if present.
-        This includes the estimate and issueid
+        Update project fields: estimate, issue_id and parent_issue_id
         """
-        assert self.number, f"Issue: {self.title} must be created first at GitHub"
+        self.fail_if_not_created()
         project = self.get_project()
         if not project:
             return
 
-        project.add_issue(self)
-        if not update_fields:
+        project.add_issue(issue=self)
+        if not _update_fields:
             return
 
-        # make only a single graphql request to update both fields
-        combined_update = True
-        if combined_update:
+        # make only a single graphql request to update all fields at once
+        if _combined_update:
             update_project_issue_fields(
                 project=project,
                 item_id=self.project_item_id,
-                estimate=self.project_estimate or 0,
-                issueid=self.project_issue_id,
+                project_estimate=self.project_estimate or 0,
+                project_issue_id=self.project_issue_id,
+                project_parent_issue_id=self.project_parent_issue_id,
             )
 
         else:
             # Update estimate field, if present
-            if estimate := self.project_estimate:
-                project.update_number_field(item_id=self.project_item_id, field_name="Estimate", value=estimate)
+            if project_estimate := self.project_estimate:
+                project.update_number_field(item_id=self.project_item_id, field_name="Estimate", value=project_estimate)
 
-            # Update IssueID if we have meta/sub issues id fields
-            if issue_id := self.project_issue_id:
-                project.update_text_field(item_id=self.project_item_id, field_name="IssueID", value=issue_id)
+            # Update IssueID if we have issueid id fields
+            if project_issue_id := self.project_issue_id:
+                project.update_text_field(item_id=self.project_item_id, field_name="IssueID", value=project_issue_id)
+
+            # Update isparent if we have isparent fields
+            if project_parent_issue_id := self.project_parent_issue_id:
+                project.update_text_field(item_id=self.project_item_id, field_name="ParentIssueID", value=project_parent_issue_id)
 
     def get_project(self):
         """
@@ -337,67 +362,42 @@ class Issue:
         """
         Create and return an Issue from a ``data`` mapping.
         """
+        labels = data.get("labels", "").strip()
+        if labels:
+            labels = [l.strip() for l in labels.split(",") if l.strip()]
+        else:
+            labels = []
+
         return cls(
             title=data["title"].strip(),
             body=data["body"].strip(),
             account_type=data["account_type"].strip(),
             account_name=data["account_name"].strip(),
             repo_name=data["repo_name"].strip(),
+
+            labels=labels,
+
             # force int
             project_number=int(data.get("project_number", "").strip() or 0),
             # force int
             project_estimate=int(data.get("project_estimate", "").strip() or 0),
-            meta_issue_id=data.get("meta_issue_id", "").strip() or "",
-            sub_issue_id=data.get("sub_issue_id", "").strip() or "",
+
+            project_issue_id=data.get("project_issue_id", "").strip() or "",
+            project_parent_issue_id=data.get("project_parent_issue_id", "").strip() or "",
         )
-
-
-@dataclasses.dataclass(kw_only=True)
-class MetaIssue(Issue):
-    """
-    A meta issue is an issue with a body that contains a bulleted list of sub issues URLs, that
-    GitHub interprets as "tasks".
-    """
-
-    issues: List[Issue] = dataclasses.field(default_factory=list)
-
-    def get_body(self):
-        sub_issues_lines = "\n".join([f"- [ ] {i.url}" for i in self.issues])
-        body = f"{self.body}\n\n{sub_issues_lines}\n"
-        return body
-
-    @property
-    def project_issue_id(self):
-        return self.meta_issue_id
-
-
-@dataclasses.dataclass(kw_only=True)
-class PlainIssue(Issue):
-    """
-    A meta issue is an issue with a body that contains a bulleted list of sub issues URLs, that
-    GitHub interprets as "tasks".
-    """
-
-    issues: List[Issue] = dataclasses.field(default_factory=list)
-
-    def get_body(self):
-        sub_issues_lines = "\n".join([f"- [ ] {i.url}" for i in self.issues])
-        body = f"{self.body}\n\n{sub_issues_lines}\n"
-        return body
-
-    @property
-    def project_issue_id(self):
-        return self.meta_issue_id
 
 
 def graphql_query(query, variables=None, headers=auth_headers, retries=0):
     """
-    Post ``request_data`` as GraphQL API query and return results. Raise Exceptions on errors.
+    Post GraphQL ``query`` with ``variables``  to GitHub API query using ``headers`` and return
+    results. Raise Exceptions on errors. Retry up to ``retries`` time.
     """
     rate_limiter.wait()
 
     api_url = "https://api.github.com/graphql"
-    request_data = {"query":query, "variables":variables}
+    request_data = {"query":query}
+    if variables:
+        request_data["variables"] = variables
 
     if DEBUG:
         click.echo()
@@ -465,8 +465,8 @@ class Project:
     @classmethod
     def get_or_create_project(cls, number, account_type, account_name):
         """
-        Return a new or existing Project object.
-        (Does NOT create anything at GitHub)
+        Return a new or an existing, cached Project object.
+        (Does NOT create anything at GitHub, the project must always exist remotely at first)
         """
         if existing := cls.projects_by_number.get(number):
             return existing
@@ -477,14 +477,13 @@ class Project:
 
     def add_issue(self, issue):
         """
-        Add Issue ``issue`` to this project at GitHub.
+        Add Issue ``issue`` to this project at GitHub. Update the issue fields in place.
         The issue must have been created first.
         """
-        if not issue.number:
-            raise Exception(f"Issue: {issue.title} has no number and must be created first at GitHub")
+        issue.fail_if_not_created()
 
-        query = """mutation($project_id:ID!, $issue_id:ID!) {
-            addProjectV2ItemById(input: {projectId: $project_id, contentId: $issue_id })
+        query = """mutation($project_id:ID!, $issue_node_id:ID!) {
+            addProjectV2ItemById(input: {projectId: $project_id, contentId: $issue_node_id })
             {
                 item { id }
             }
@@ -492,10 +491,10 @@ class Project:
         """
 
         project_id = self.get_project_id()
-        variables = {"project_id": project_id, "issue_id": issue.issue_id}
+        variables = {"project_id": project_id, "issue_node_id": issue.issue_node_id}
 
         results = graphql_query(query=query, variables=variables)
-        issue.project_item_id = results['data']['addProjectV2ItemById']['item']['id']
+        issue.project_item_id = results["data"]["addProjectV2ItemById"]["item"]["id"]
 
     def get_project_id(self):
         self.populate_project_id()
@@ -550,26 +549,26 @@ class Project:
         results = graphql_query(query=query, variables=variables)
 
         # results data shape
-        """
-        {
-          "data": {
-            "node": {
-              "fields": {
-                "nodes": [
-                  {
-                    "id": "PVTF_lAHOAApQnc4Au19yzglXyEc",
-                    "name": "Title"
-                  },
-                  ............
-                ]
-              }
-            }
-          }
-        }
-        """
+        # """
+        # {
+        #   "data": {
+        #     "node": {
+        #       "fields": {
+        #         "nodes": [
+        #           {
+        #             "id": "PVTF_lAHOAApQnc4Au19yzglXyEc",
+        #             "name": "Title"
+        #           },
+        #           ............
+        #         ]
+        #       }
+        #     }
+        #   }
+        # }
+        # """
 
         for field in results["data"]["node"]["fields"]["nodes"]:
-            # some non-plain fields can be empty mappings
+            # Some non-plain fields can be empty mappings
             # better be safe
             if field and (name := field.get("name")) and (field_id := field.get("id")):
                 self.fields[name] = field_id
@@ -578,46 +577,47 @@ class Project:
         """
         Update a "number" field.
         """
-        update_field(project=self, item_id=item_id, field_name=field_name, value=float(value), query=UPDATE_NUMBER_MUTATION_QUERY)
+        update_field(
+            project=self,
+            item_id=item_id,
+            field_name=field_name,
+            value=float(value),
+            query=UPDATE_NUMBER_MUTATION_QUERY,
+        )
 
     def update_text_field(self, item_id, field_name, value):
         """
         Update a "string/text" field.
         """
-        update_field(project=self, item_id=item_id, field_name=field_name, value=str(value), query=UPDATE_TEXT_MUTATION_QUERY)
-
-
-UPDATE_ESTIMATE_AND_ISSUEID_MUTATION_QUERY = """
-    mutation(
-        $project_id:ID!,
-        $item_id:ID!,
-
-        $estimate_field_id:ID!,
-        $estimate_value:Float!,
-
-        $issueid_field_id:ID!,
-        $issueid_value:String!
-    ) {
-        update_estimate: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $estimate_field_id
-                value: { number: $estimate_value }
-            }
+        update_field(
+            project=self,
+            item_id=item_id,
+            field_name=field_name,
+            value=str(value),
+            query=UPDATE_TEXT_MUTATION_QUERY,
         )
-        { projectV2Item { id } }
 
-        update_issueid: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $issueid_field_id
-                value: { text: $issueid_value }
-            }
-        )
-        { projectV2Item { id } }
-    }
+
+UPDATE_NUMBER_MUTATION_QUERY = """mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $value:Float!) {
+    updateProjectV2ItemFieldValue(input: {
+        projectId: $project_id
+        itemId: $item_id
+        fieldId: $field_id
+        value: { number: $value }
+    })
+    { projectV2Item { id } }
+}
+"""
+
+UPDATE_TEXT_MUTATION_QUERY = """mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $value:String!) {
+    updateProjectV2ItemFieldValue(input: {
+        projectId: $project_id
+        itemId: $item_id
+        fieldId: $field_id
+        value: { text: $value }
+    })
+    { projectV2Item { id } }
+}
 """
 
 UPDATE_ESTIMATE_MUTATION_QUERY = """
@@ -647,86 +647,232 @@ UPDATE_ISSUEID_MUTATION_QUERY = """
         $project_id:ID!,
         $item_id:ID!,
 
-        $issueid_field_id:ID!,
-        $issueid_value:String!
+        $issue_id_field_id:ID!,
+        $issue_id_value:String!
     ) {
-        update_issueid: updateProjectV2ItemFieldValue(
+        update_issue_id: updateProjectV2ItemFieldValue(
             input: {
                 projectId: $project_id
                 itemId: $item_id
-                fieldId: $issueid_field_id
-                value: { text: $issueid_value }
+                fieldId: $issue_id_field_id
+                value: { text: $issue_id_value }
             }
         )
         { projectV2Item { id } }
     }
 """
 
+UPDATE_PARENTISSUEID_MUTATION_QUERY = """
+    mutation(
+        $project_id:ID!,
+        $item_id:ID!,
 
-def update_project_issue_fields(project, item_id, estimate, issueid):
-    """
-    Update a the ``estimate`` and ``isssueid`` fields of the ``project`` item ``item_id``.
-    """
-    # note that this is rather ugly code, but updating multiple fields in GraphQL @ GH is ugly
+        $parent_issue_id_field_id:ID!,
+        $parent_issue_id_value:String!
+    ) {
+        update_parent_issue_id: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $parent_issue_id_field_id
+                value: { text: $parent_issue_id_value }
+            }
+        )
+        { projectV2Item { id } }
+    }
+"""
 
-    if not estimate and not issueid:
+UPDATE_ESTIMATE_AND_ISSUEID_MUTATION_QUERY = """
+    mutation(
+        $project_id:ID!,
+        $item_id:ID!,
+
+        $estimate_field_id:ID!,
+        $estimate_value:Float!,
+
+        $issue_id_field_id:ID!,
+        $issue_id_value:String!
+    ) {
+        update_estimate: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $estimate_field_id
+                value: { number: $estimate_value }
+            }
+        )
+        { projectV2Item { id } }
+
+        update_issue_id: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $issue_id_field_id
+                value: { text: $issue_id_value }
+            }
+        )
+        { projectV2Item { id } }
+    }
+"""
+
+UPDATE_ISSUEID_AND_PARENTISSUEID_MUTATION_QUERY = """
+    mutation(
+        $project_id:ID!,
+        $item_id:ID!,
+
+        $issue_id_field_id:ID!,
+        $issue_id_value:String!,
+
+        $parent_issue_id_field_id:ID!,
+        $parent_issue_id_value:String!
+
+    ) {
+        update_issue_id: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $issue_id_field_id
+                value: { text: $issue_id_value }
+            }
+        )
+        { projectV2Item { id } }
+
+        update_parent_issue_id: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $parent_issue_id_field_id
+                value: { text: $parent_issue_id_value }
+            }
+        )
+        { projectV2Item { id } }
+
+    }
+"""
+
+UPDATE_ESTIMATE_ISSUEID_PARENTISSUEID_MUTATION_QUERY = """
+    mutation(
+        $project_id:ID!,
+        $item_id:ID!,
+
+        $estimate_field_id:ID!,
+        $estimate_value:Float!,
+
+        $issue_id_field_id:ID!,
+        $issue_id_value:String!,
+
+        $parent_issue_id_field_id:ID!,
+        $parent_issue_id_value:String!
+
+    ) {
+        update_estimate: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $estimate_field_id
+                value: { number: $estimate_value }
+            }
+        )
+        { projectV2Item { id } }
+
+        update_issue_id: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $issue_id_field_id
+                value: { text: $issue_id_value }
+            }
+        )
+        { projectV2Item { id } }
+
+        update_parent_issue_id: updateProjectV2ItemFieldValue(
+            input: {
+                projectId: $project_id
+                itemId: $item_id
+                fieldId: $parent_issue_id_field_id
+                value: { text: $parent_issue_id_value }
+            }
+        )
+        { projectV2Item { id } }
+
+    }
+"""
+
+
+def update_project_issue_fields(
+    project,
+    item_id,
+    project_estimate,
+    project_issue_id,
+    project_parent_issue_id,
+):
+    """
+    Update multiple fields  of the ``project`` item with ``item_id``.
+
+    The fields are hardcoded: ``project_estimate`` , ``project_isssue_id`` and ``project_parent_issue_id`` .
+
+    This is designed to work on a multiple fields at once to avoid hitting rate limit too quickly.
+
+    """
+    # Note that this is rather ugly code, but updating multiple fields in GraphQL @ GH is ugly
+    # TODO: rector to deal with many fields automatically
+
+    assert project and item_id
+
+    if not project_issue_id:
         return
+
     variables = {
         "project_id": project.get_project_id(),
         "item_id": item_id,
     }
+    if project_estimate and project_issue_id and project_parent_issue_id:
+        query = UPDATE_ESTIMATE_ISSUEID_PARENTISSUEID_MUTATION_QUERY
 
-    if estimate and issueid:
+    elif project_estimate and project_parent_issue_id:
+        query = UPDATE_ISSUEID_AND_PARENTISSUEID_MUTATION_QUERY
+
+    elif project_estimate and project_issue_id:
         query = UPDATE_ESTIMATE_AND_ISSUEID_MUTATION_QUERY
-    elif estimate:
+
+    elif project_estimate:
         query = UPDATE_ESTIMATE_MUTATION_QUERY
-    elif issueid:
+
+    elif project_issue_id:
         query = UPDATE_ISSUEID_MUTATION_QUERY
 
-    if estimate:
+    elif project_parent_issue_id:
+        query = UPDATE_PARENTISSUEID_MUTATION_QUERY
+
+    if project_estimate:
         variables.update(
             {
                 "estimate_field_id": project.get_field_id("Estimate"),
-                "estimate_value": estimate,
+                "estimate_value": project_estimate,
             }
         )
-    if issueid:
+    if project_issue_id:
         variables.update(
             {
-                "issueid_field_id": project.get_field_id("IssueID"),
-                "issueid_value": issueid,
+                "issue_id_field_id": project.get_field_id("IssueID"),
+                "issue_id_value": project_issue_id,
+            }
+        )
+    if project_parent_issue_id:
+        variables.update(
+            {
+                "parent_issue_id_field_id": project.get_field_id("ParentIssueID"),
+                "parent_issue_id_value": project_parent_issue_id,
             }
         )
     graphql_query(query=query, variables=variables)
 
 
-UPDATE_NUMBER_MUTATION_QUERY = """mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $value:Float!) {
-    updateProjectV2ItemFieldValue(input: {
-        projectId: $project_id
-        itemId: $item_id
-        fieldId: $field_id
-        value: { number: $value }
-    })
-    { projectV2Item { id } }
-}
-"""
-
-UPDATE_TEXT_MUTATION_QUERY = """mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $value:String!) {
-    updateProjectV2ItemFieldValue(input: {
-        projectId: $project_id
-        itemId: $item_id
-        fieldId: $field_id
-        value: { text: $value }
-    })
-    { projectV2Item { id } }
-}
-"""
-
-
-def update_field(project, item_id, field_name, value, query):
+def update_field(project, item_id, field_name, value, query, verbose=False):
     """
     Update a field with ``field_name`` to ``value`` for the project item ``item_id`` using the
     ``query`` GraphQL mutation.
+    This is designed to work on a single field
     """
     variables = {
         "project_id": project.get_project_id(),
@@ -734,86 +880,73 @@ def update_field(project, item_id, field_name, value, query):
         "field_id": project.get_field_id(field_name),
         "value": value
     }
-
+    if verbose:
+        click.echo(f"Updaing issue field: {field_name} with value: {value!r} with variables: {variables} through query: {query!r}")
     graphql_query(query=query, variables=variables)
 
 
 def load_issues(location, max_load=0):
     """
     Load issues from the CSV file at ``location``.
-    Return a tuple of ([list of Issue], [list of MetaIssue])
-    Raise exception on errors.
-    Limit loading up to "max_import" issues. Load all if max_load is zero.
+    Return a list of Issue. Raise exception on errors.
+    Limit loading up to ``max_load`` issues. Load all if ``max_load`` is 0.
     """
     issues = []
-    meta_issues_by_id = {}
+    issues_by_project_issue_id = {}
+    subissues_by_parent_id = defaultdict(list)
+    parents_by_subissue_id = defaultdict(list)
 
     with open(location) as issues_data:
         for i, issue_data in enumerate(csv.DictReader(issues_data), 1):
 
-            meta_issue_id = issue_data.get("meta_issue_id", "").strip() or ""
-            sub_issue_id = issue_data.get("sub_issue_id", "").strip() or ""
+            issue = Issue.from_data(data=issue_data)
+            issues.append(issue)
 
-            is_meta_issue = bool(meta_issue_id and not sub_issue_id)
+            project_issue_id = issue.project_issue_id
 
-            cls = MetaIssue if is_meta_issue else Issue
-            issue = cls.from_data(data=issue_data)
+            if project_issue_id:
+                assert project_issue_id not in issues_by_project_issue_id, f"Duplicated issue id: {issue!r}"
+                issues_by_project_issue_id[project_issue_id] = issue
 
-            if is_meta_issue:
-                if existing_meta := meta_issues_by_id.get(meta_issue_id):
-                    raise Exception(
-                        f"Duplicated meta issue identifier: {meta_issue_id}: "
-                        f"existing: {existing_meta.title!r} "
-                        f"new: {issue.title!r} "
-                    )
-                meta_issues_by_id[meta_issue_id] = issue
-            else:
-                issues.append(issue)
+                project_parent_issue_id = issue.project_parent_issue_id
+                if project_parent_issue_id:
+
+                    if project_parent_issue_id == project_issue_id:
+                        raise Exception(f"Subissue {project_issue_id} cannot be its ownparent")
+
+                    # avoid dupes: subissue can only be in one parent, and cannot be twice in a parent
+                    if project_parent_issue_id in parents_by_subissue_id[project_issue_id]:
+                        raise Exception(
+                            f"Subissue {project_issue_id} cannot have more than one parent: "
+                            f"{subissues_by_parent_id[project_parent_issue_id]}")
+
+                    parents_by_subissue_id[project_issue_id].append(project_parent_issue_id)
+
+                    if project_issue_id in subissues_by_parent_id[project_parent_issue_id]:
+                        raise Exception(
+                            f"Subissue {project_issue_id} cannot be duplicated in parent: "
+                            f"{project_parent_issue_id}")
+
+                    subissues_by_parent_id[project_parent_issue_id].append(project_issue_id)
+
             if max_load and i >= max_load:
                 break
 
-    for issue in issues:
-        if meta_id := issue.meta_issue_id:
-            meta_issue = meta_issues_by_id[meta_id]
-            meta_issue.issues.append(issue)
+    for parent_id, project_subissue_ids in subissues_by_parent_id.items():
+        assert (
+            parent_id in issues_by_project_issue_id,
+            f"Orphaned parent_id: {parent_id!r} in sub issue ids: {project_subissue_ids!r}"
+        )
+        issue = issues_by_project_issue_id[parent_id]
+        issue.project_subissue_ids = project_subissue_ids
 
-    return issues, list(meta_issues_by_id.values())
+    return issues
 
 
 def dump_csv_sample(ctx, param, value):
     if not value or ctx.resilient_parsing:
         return
-    click.echo('''meta_issue_id,sub_issue_id,account_type,account_name,repo_name,project_number,title,body,project_estimate
-gizmo,,organization,allthelibraries,test-repo-issues2,1,Create gizmo application,"The goal of this main issue is to create a new gizmo app.
-There are multiple items we need to  complete for that:",0
-gizmo,a,organization,allthelibraries,test-repo-issues1,1,Design Gizmo data model,"A gizmo has two fields as follow:
-- [ ] foo
-- [ ] bar
-",2
-gizmo,b,organization,allthelibraries,test-repo-issues2,1,Create Gizmo back-end,We need to create a backend with a rest API,3
-gizmo,c,organization,allthelibraries,test-repo-issues2,1,Create Gizmo front-end UI,We need to create a frontend with a web UI,4
-bidule,,organization,allthelibraries,test-repo-issues1,1,Create bidule application,"The goal of this main issue is to create a new bidule app.
-There are multiple items we need to  complete for that:",0
-bidule,d,organization,allthelibraries,test-repo-issues1,1,Design bidule data model,"A bidule has two fields as follow:
-- [ ] foo
-- [ ] bar
-",5
-bidule,d,organization,allthelibraries,test-repo-issues2,1,Create bidule back-end,We need to create a backend with a rest API,6
-bidule,f,organization,allthelibraries,test-repo-issues2,1,Create bidule front-end UI,We need to create a frontend with a web UI,7
-,,organization,allthelibraries,test-repo-issues2,,"Plain issue, no project",Plain,
-,,organization,allthelibraries,test-repo-issues2,2,"Plain issue, in project 2",Plain 2,9
-meta,,organization,allthelibraries,test-repo-issues2,2,"Meta issue, in project 2, no sub",Plain 3,10
-metasub,,organization,allthelibraries,test-repo-issues2,,"Meta issue, NO project with sub",Meta plain,
-metasub,subissue,organization,allthelibraries,test-repo-issues2,,"Sub issue, NO project with sub",Sub plain,
-truc,,organization,allthelibraries,test-repo-issues1,,Create truc application NO project ,"The goal of this main issue is to create a new truc app.
-There are multiple items we need to  complete for that:",
-truc,d,organization,allthelibraries,test-repo-issues1,,Design truc data model NO project ,"A truc has two fields as follow:
-- [ ] foo
-- [ ] bar
-",
-truc,d,organization,allthelibraries,test-repo-issues2,,Create truc back-end NO project ,We need to create a backend with a rest API,
-truc,f,organization,allthelibraries,test-repo-issues2,,Create truc front-end UI NO project ,We need to create a frontend with a web UI,
-''')
+    click.echo(open("issues.csv").read())
     ctx.exit()
 
 
@@ -852,7 +985,7 @@ def create_issue_and_add_to_project(issue):
     is_eager=True,
     expose_value=False,
     callback=dump_csv_sample,
-    help='Dump a sample CSV on screen and exit.',
+    help='Dump a sample CSV on screen and exit. See also the "issues.csv" file',
 )
 @click.help_option("-h", "--help")
 def import_issues_in_github(ctx, issues_file, max_import=0):
@@ -862,26 +995,44 @@ def import_issues_in_github(ctx, issues_file, max_import=0):
     You must set the GITHUB_TOKEN environment variable with a token for authentication with GitHub.
     The token must have the proper permissions to create issues and update projects.
 
-    Use the "--csv-sample" option to print a CSV sample.
+    Use the "--csv-sample" option to print a CSV sample with all the supported columns.
     """
 
     if not GITHUB_TOKEN:
         click.echo("You must set the GITHUB_TOKEN environment variable to a Github token.")
         ctx.exit(1)
 
-    issues, meta_issues = load_issues(location=issues_file, max_load=max_import)
+    issues = load_issues(location=issues_file, max_load=max_import)
 
     if max_import:
-        click.echo(f"Importing up to {max_import} issues in GitHub")
+        click.echo(f"Importing up to {max_import} issues in GitHub from {len(issues)} total.")
     else:
-        click.echo("Importing issues in GitHub")
+        click.echo(f"Importing {len(issues)} issues in GitHub")
 
+    issues_by_project_id = defaultdict(list)
     for issue in issues:
         create_issue_and_add_to_project(issue)
+        project_issue_id = issue.project_issue_id
+        if project_issue_id:
+            issues_by_project_id[project_issue_id].append(issue)
 
-    click.echo("\nImporting meta issues in GitHub")
-    for issue in meta_issues:
-        create_issue_and_add_to_project(issue)
+    click.echo("Creating sub issues")
+    # once all issues are created we can create subissues
+    issue_by_project_issue_id = {
+        issue.project_issue_id: issue for issue in issues if issue.project_issue_id
+    }
+
+    for issue in issues:
+        for project_subissue_id in issue.project_subissue_ids:
+            subissue = issue_by_project_issue_id[project_subissue_id]
+            click.echo(f"  Create sub issue for parent issue: {issue.url}")
+            click.echo(f"    Sub-issue: {subissue.url}")
+            try:
+                issue.add_subissue(subissue=subissue)
+            except:
+                click.echo(f"  Failed to create sub issue for parent issue: {issue!r}")
+                click.echo(f"    Sub-issue: {subissue!r}")
+                raise
 
     click.echo("Importing done.")
 

@@ -1,11 +1,11 @@
-# GitHub Issues and Project importer
+# GitHub Issues and Project issues importer
 
 ### Description
 
-This script is a simple tool designed to create new issues from a CSV file into GitHub repositories
+This script creates new GitHub issues in repositories from a CSV file
 and optionally, to add these issues to Projects.
 
-The script reads issues, one per row, from a CSV file and creates corresponding GitHub issues, 
+The script reads issues, one per row, from a CSV file and creates corresponding GitHub issues.
 
 The goal is to make it easier to manage and track many issues and tasks using GitHub's project
 management system.
@@ -23,14 +23,19 @@ Copyright (c) 2024 goldhaxx, nexB and others
 ### Features
 
 - Bulk import from CSV to GitHub as issues.
-- Optional addition of these issues to a Project.
-- Support for "meta" issue that reference multiple "sub" issues in their body. 
-- Support for two custom fields in the CSV: Estimate and IssueID
-  - Estimate is imported from the "project_estimate" column with a rough estimate to complete in number of days
-  - IssueID is computed from the concatenation of "meta_issue_id-sub_issue_id" columns and is used to track these original ids
+- Optionally add these issues to a Project.
+- Labels are also imported. Use a list sperated by coma 
+- Issues can have a single parent issue. They will be also added to the parent as GitHub sub-issues.
+- Support for custom fields in the CSV, thta are added to the Project items as custom fields:
+  - Estimate is imported from the "project_estimate" column with a rough estimate to complete in
+    number of days
+  - IssueID is imported from the "project_issue_id" column and is used to track these external ids
+    we assign to an issue.
+  - ParentIssueID is imported from the "project_parent_issue_id" column and is used to track
+    external ids we assign to an issue. Use to create subissues.
   
-Not supported: Nothing not listed above.
-- Labels, priority, iterations, size and status.
+Not supported: Nothing not listed above including
+- Priority, iterations, size and status.
 - Assignees.
 
 ### Getting started
@@ -80,30 +85,13 @@ Optional Project fields support:
   This is used to populate an "Estimate" custom project field that needs to be created first as
   a "number" field in the Project.
 
-##### Optional Meta issues support:
+##### Optional issue ids and subissues support:
 
-We can import plain issues as well as "meta issues". A meta issue body contains a bulleted list of
-checkboxes with links to all its "sub issues". GitHub recognizes these links as "tasks".
+We can related issues to parent issues using "subissues". We use two columns for issues id and subissues:
 
-We use two columns for meta issues and their sub issues:
+- "project_issue_id": arbitrary issue id string. Must be unique across all rows in a project import.
+  Used to populate the IssueID project field.
 
-- "meta_issue_id": arbitrary meta issue id string, used to relate "sub issues" to a "meta issue".
-- "sub_issue_id": arbitrary sub issue id string used to uniquely identify a sub issue within a meta issue.
-
-With meta issues, a row can have:
-
-- no "meta_issue_id": this is a plain issue, e.g., neither a meta nor a subissue.
-
-- only a "meta_issue_id" value and no "sub_issue_id" value: this means this is a "meta issue" row.
-  This meta_issue_id must be unique across all other meta issue rows.
-
-- a "meta_issue_id" and a "sub_issue_id" value: this means this is a "sub issue" row for the meta
-  issue of this "meta_issue_id". The combo of meta_issue_id and sub_issue_id must be
-  unique across all issue rows.
-
-For meta issues, the body will be extended with a bulleted list of links to sub issues.
-
-If the project has an IssueID custom field:
-- For meta issues, the IssueID is updated with "meta_issue_id" value
-- For sub issues, the IssueID is updated with the combined values of "meta_issue_id-sub_issue_id"
-
+- "project_parent_issue_id": arbitrary parent issue id string used to uniquely identify a parent issue.
+  Must exist also as a project_issue_id. An issue can only have a sinple unique parent.
+  Used to populate the ParentIssueID project field.
