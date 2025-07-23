@@ -120,9 +120,12 @@ def debug_project_items_from_source(
     )
     source_project.populate_field_ids_by_name()
 
-    click.echo(json.dumps(source_project.fields, indent=2))
     click.echo("-------------------------------------------------------")
-    click.echo(json.dumps(source_project.field_options, indent=2))
+    click.echo(json.dumps(source_project.field_ids_by_field_name, indent=2))
+    click.echo("-------------------------------------------------------")
+    click.echo(json.dumps(source_project.field_select_option_ids_by_field_and_option_name, indent=2))
+    click.echo("-------------------------------------------------------")
+    click.echo(json.dumps(source_project.field_iteration_ids_by_field_and_iteration_title, indent=2))
     click.echo("-------------------------------------------------------")
     items = source_project.get_items(with_full_content=True)
     click.echo(json.dumps(items, indent=2))
@@ -163,10 +166,10 @@ def copy_github_project_items_from_source_to_target(
         if "content" not in item_data:
             click.echo(f"Skipping empty item.")
             continue
-
         content = item_data["content"]
 
         if "id" in content:
+
             # handle issues and PRs
             content_id = content["id"]
             new_item_id = target_project.create_item(content_id=content_id)
@@ -187,6 +190,7 @@ def copy_github_project_items_from_source_to_target(
                 project_id=item.project_id,
                 project_issue_id=item.project_issue_id,
                 status=item.status,
+                iteration=item.iteration,
             )
 
         else:

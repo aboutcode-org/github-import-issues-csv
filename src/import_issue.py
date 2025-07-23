@@ -221,6 +221,9 @@ class Item:
     status: str = ""
 
     # Optional:
+    iteration: str = ""
+
+    # Optional:
     project_estimate: int = 0
 
     # Optional: an arbitrary string used to identify this project ( NOT the same as the GH project
@@ -294,6 +297,7 @@ class Item:
         estimate = (data.get("estimate") or {}).get("number") or 0
         estimate = int(estimate)
         status = (data.get("status") or {}).get("name") or ""
+        iteration = (data.get("iteration") or {}).get("title") or ""
 
         title = content.get("title") or ""
         url = content["url"]
@@ -314,6 +318,7 @@ class Item:
 
             # custom fields
             status=status,
+            iteration=iteration,
             project_estimate=estimate,
             project_id=project_id,
             project_issue_id=issue_id,
@@ -431,6 +436,7 @@ class Issue(Item):
             project_issue_id=self.project_issue_id,
             project_id=self.project_id,
             status=self.status or "",
+            iteration=self.iteration or "",
         )
 
     def get_project(self):
@@ -487,6 +493,7 @@ class Issue(Item):
             project_issue_id=data.get("project_issue_id", "").strip() or "",
             project_parent_issue_id=data.get("project_parent_issue_id", "").strip() or "",
             status=data.get("status", "").strip() or "",
+            iteration=data.get("iteration", "").strip() or "",
         )
 
 
@@ -557,8 +564,11 @@ class Project:
     # {name -> field_node_id} mapping for the project "plain" fields (text, date and numbers).
     field_ids_by_field_name: Dict[str, str] = dataclasses.field(default_factory=dict)
 
-    # {name -> {option name: option _node_id} mapping for the project singleselect fields
+    # {name -> {option name: option id} mapping for the project singleselect fields
     field_select_option_ids_by_field_and_option_name: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
+
+    # {name -> {iteration title: iteration id} mapping for the project iteration fields
+    field_iteration_ids_by_field_and_iteration_title: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
         assert self.number
@@ -642,6 +652,7 @@ class Project:
         project_id,
         project_issue_id,
         status="",
+        iteration="",
     ):
         """
         Update multiple fields of this project item with ``item_node_id``.
@@ -661,9 +672,10 @@ class Project:
             "project_id_field_id": self.get_field_node_id("ProjectID"),
             "project_id_value": project_id or "",
         }
+
         with_status = bool(status)
         if with_status:
-            status_variables= {
+            status_variables = {
                 "status_field_id": self.get_field_node_id("Status"),
                 "status_value": self.get_field_option_id(field_name="Status", option_name=status) or "",
             }
@@ -671,7 +683,17 @@ class Project:
             if DEBUG:
                 click.echo(f"Updating Status field: {status} with {status_variables}")
 
-        query = get_fields_update_query(with_status=with_status)
+        with_iteration = bool(iteration)
+        if with_iteration:
+            iteration_variables = {
+                "iteration_field_id": self.get_field_node_id("Iteration"),
+                "iteration_value": self.get_field_iteration_id(field_name="Iteration", iteration_title=iteration) or "",
+            }
+            variables.update(iteration_variables)
+            if DEBUG:
+                click.echo(f"Updating iIeration field: {iteration} with {iteration_variables}")
+
+        query = get_fields_update_query(with_status=with_status, with_iteration=with_iteration)
         graphql_query(query=query, variables=variables)
 
     def get_project_node_id(self):
@@ -720,13 +742,25 @@ class Project:
         self.populate_field_ids_by_name()
         return self.field_select_option_ids_by_field_and_option_name[field_name].get(option_name)
 
+    def get_field_iteration_id(self, field_name, iteration_title):
+        """
+        Return the iteration id for a ``field_name`` and ``iteration_title``.
+        This is a string and not an ID! from graphql point of view.
+        """
+        self.populate_field_ids_by_name()
+        return self.field_iteration_ids_by_field_and_iteration_title[field_name].get(iteration_title)
+
     def populate_field_ids_by_name(self):
         """
         Fetch and cache this project field names and node ids. This is a {name -> field_node_id}
         mapping for the project "plain" fields (text, date and numbers). This ignores field
         typename, datatype, and skip most special field types like iterations.
 
-        SingleSelect are tracked with field_select_option_ids_by_field_and_option_name (like the important Status)
+        SingleSelect are tracked with field_select_option_ids_by_field_and_option_name (
+        like the important Status)
+
+        Iteration are tracked with field_iteration_ids_by_field_and_iteration_title.
+
         """
         if self.field_ids_by_field_name:
             return
@@ -734,7 +768,7 @@ class Project:
         query = """query($project_node_id:ID!) {
             node(id: $project_node_id) {
                 ... on ProjectV2 {
-                    fields(first: 20) {
+                    fields(first: 30) {
                         nodes {
                             ... on ProjectV2Field {
                                 id
@@ -746,6 +780,16 @@ class Project:
                                 options {
                                     id
                                     name
+                                }
+                            }
+                            ... on ProjectV2IterationField {
+                                id
+                                name
+                                configuration {
+                                    iterations {
+                                        id
+                                        title
+                                    }
                                 }
                             }
 
@@ -760,46 +804,97 @@ class Project:
         results = graphql_query(query=query, variables=variables)
 
         # results data shape
-        # """
-        # {
-        #   "data": {
-        #     "node": {
-        #       "fields": {
-        #         "nodes": [
-        #           {
-        #             "id": "PVTF_lAHOAApQnc4Au19yzglXyEc",
-        #             "name": "Title"
-        #           },
-        #           ............
-        #         ]
-        #       }
-        #     }
-        #   }
-        # }
-        # """
+        """
+        {
+          "data": {
+            "node": {
+              "fields": {
+                "nodes": [
+                  {
+                    "id": "PVTSSF_lADODNlKL84A-YHvzgxzFX8",
+                    "name": "Status",
+                    "options": [
+                      {
+                        "id": "f75ad846",
+                        "name": "Todo"
+                      },
+                      {
+                        "id": "98236657",
+                        "name": "Done"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "PVTF_lADODNlKL84A-YHvzgxzFYg",
+                    "name": "Estimate"
+                  },
+                  {
+                    "id": "PVTF_lADODNlKL84A-YHvzgxzFYk",
+                    "name": "IssueID"
+                  },
+                  {
+                    "id": "PVTF_lADODNlKL84A-YHvzgxzFYo",
+                    "name": "ProjectID"
+                  },
+                  {
+                    "id": "PVTIF_lADODNlKL84A-YHvzgyACIw",
+                    "name": "Iteration",
+                    "configuration": {
+                      "iterations": [
+                        {
+                          "id": "704b2d01",
+                          "title": "Iteration 1"
+                        },
+                        {
+                          "id": "2aa037b3",
+                          "title": "Iteration 2"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+        """
 
         field_ids_by_field_name = {}
         field_option_ids_by_field_and_option_name = {}
+        field_iteration_ids_by_field_and_iteration_title = {}
 
         for field in results["data"]["node"]["fields"]["nodes"]:
             # Some non-plain fields can be empty mappings
             # better be safe
             if not field:
                 continue
+
             name = field.get("name")
             field_node_id = field.get("id")
+
             if not name or not field_node_id:
                 continue
+
             field_ids_by_field_name[name] = field_node_id
+
+            # singleselect
             options = field.get("options") or {}
             if options:
                 optid_by_name = {opt["name"]: opt["id"] for opt in options}
                 field_option_ids_by_field_and_option_name[name] = optid_by_name
 
+            # iteration
+            configuration = field.get("configuration") or {}
+            if configuration:
+                iterations = configuration.get("iterations") or []
+                iterid_by_title = {it["title"]: it["id"] for it in iterations}
+                field_iteration_ids_by_field_and_iteration_title[name] = iterid_by_title
+
         self.field_ids_by_field_name = field_ids_by_field_name
         self.field_select_option_ids_by_field_and_option_name = field_option_ids_by_field_and_option_name
+        self.field_iteration_ids_by_field_and_iteration_title = field_iteration_ids_by_field_and_iteration_title
 
-    def get_items(self, with_full_content=False, with_iteration=False):
+    def get_items(self, with_full_content=False):
         """
         Return a list of all items in this project
         This includes issues, pull requests and draft issues.
@@ -868,15 +963,7 @@ class Project:
                       }
         """
 
-        iteration = """
-                    iteration: fieldValueByName(name: "Iteration") {
-                      ... on ProjectV2ItemFieldIterationValue {
-                        title
-                        startDate
-                        duration
-                      }
-                    }
-        """
+        content = full_content if with_full_content else mini_content
 
         while has_next_page:
             query = ("""
@@ -910,7 +997,12 @@ class Project:
                           name
                         }
                       }
-                      %s
+                      iteration: fieldValueByName(name: "Iteration") {
+                        ... on ProjectV2ItemFieldIterationValue {
+                          title
+                        }
+                      }
+
                       %s
                     }
                   }
@@ -918,8 +1010,7 @@ class Project:
               }
             }
             """ % (
-                full_content  if with_full_content else mini_content,
-                iteration if with_iteration else ""
+                content,
                 )
             )
             variables = {"project_node_id": self.get_project_node_id(), "cursor": cursor}
@@ -932,17 +1023,15 @@ class Project:
             page_info = items["pageInfo"]
             has_next_page = page_info["hasNextPage"]
             cursor = page_info["endCursor"]
-
         return all_items
 
 
-def get_fields_update_query(with_status=False):
+def get_fields_update_query(with_status=False, with_iteration=False):
 
     status_vars = """
-            ,
-            $status_field_id:ID!,
+            $status_field_id:ID!
             $status_value:String!
-            """
+            """ if with_status else ""
 
     status_update = """
             update_status_id: updateProjectV2ItemFieldValue(
@@ -954,24 +1043,42 @@ def get_fields_update_query(with_status=False):
                 }
             )
             { projectV2Item { id } }
-    """
+    """ if with_status else ""
+
+    iteration_vars = """
+            $iteration_field_id:ID!
+            $iteration_value:String!
+            """ if with_iteration else ""
+
+    iteration_update = """
+            update_iteration_id: updateProjectV2ItemFieldValue(
+                input: {
+                    projectId: $project_node_id
+                    itemId: $item_node_id
+                    fieldId: $iteration_field_id
+                    value: { iterationId: $iteration_value }
+                }
+            )
+            { projectV2Item { id } }
+    """ if with_iteration else ""
 
     query = ("""
         mutation(
-            $project_node_id:ID!,
-            $item_node_id:ID!,
+            $project_node_id:ID!
+            $item_node_id:ID!
 
-            $estimate_field_id:ID!,
-            $estimate_value:Float!,
+            $estimate_field_id:ID!
+            $estimate_value:Float!
 
-            $issue_id_field_id:ID!,
-            $issue_id_value:String!,
+            $issue_id_field_id:ID!
+            $issue_id_value:String!
 
-            $project_id_field_id:ID!,
+            $project_id_field_id:ID!
             $project_id_value:String!
 
             %s
 
+            %s
         ) {
             update_estimate: updateProjectV2ItemFieldValue(
                 input: {
@@ -1004,10 +1111,14 @@ def get_fields_update_query(with_status=False):
             { projectV2Item { id } }
 
             %s
+
+            %s
        }
     """) % (
-        status_vars if with_status else "",
-        status_update if with_status else "",
+        status_vars,
+        iteration_vars,
+        status_update ,
+        iteration_update ,
     )
 
     return query
