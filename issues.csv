@@ -1,30 +1,30 @@
-project_issue_id,project_parent_issue_id,project_estimate,account_type,account_name,repo_name,project_number,labels,title,body
-gizmo,,0,organization,import-tests,test-repo-issues2,5,"foo,bar",Create gizmo application,"The goal of this main issue is to create a new gizmo app.
+project_issue_id,project_parent_issue_id,project_estimate,account_type,account_name,repo_name,project_id,project_number,status,labels,title,body
+gizmo,,0,organization,import-tests,test-repo-issues2,project-5,5,In Progress,"foo,bar",Create gizmo application,"The goal of this main issue is to create a new gizmo app.
 There are multiple items we need to  complete for that:"
-gizmo-a,gizmo,2,organization,import-tests,test-repo-issues1,5,"foo,bar",Design Gizmo data model,"A gizmo has two fields as follow:
+gizmo-a,gizmo,2,organization,import-tests,test-repo-issues1,project-5,5,In Progress,"foo,bar",Design Gizmo data model,"A gizmo has two fields as follow:
 - [ ] foo
 - [ ] bar
 "
-gizmo-b,gizmo,3,organization,import-tests,test-repo-issues2,5,"foo,bar",Create Gizmo back-end,We need to create a backend with a rest API
-gizmo-c,gizmo,4,organization,import-tests,test-repo-issues2,5,"foo,bar",Create Gizmo front-end UI,We need to create a frontend with a web UI
-bidule,,0,organization,import-tests,test-repo-issues1,5," foo, baz ",Create bidule application,"The goal of this main issue is to create a new bidule app.
+gizmo-b,gizmo,3,organization,import-tests,test-repo-issues2,project-5,5,,"foo,bar",Create Gizmo back-end,We need to create a backend with a rest API
+gizmo-c,gizmo,4,organization,import-tests,test-repo-issues2,project-5,5,,"foo,bar",Create Gizmo front-end UI,We need to create a frontend with a web UI
+bidule,,0,organization,import-tests,test-repo-issues1,project-5,5,Todo," foo, baz ",Create bidule application,"The goal of this main issue is to create a new bidule app.
 There are multiple items we need to  complete for that:"
-bidule-d,bidule,5,organization,import-tests,test-repo-issues1,5,,Design bidule data model,"A bidule has two fields as follow:
+bidule-d,bidule,5,organization,import-tests,test-repo-issues1,project-5,5,,,Design bidule data model,"A bidule has two fields as follow:
 - [ ] foo
 - [ ] bar
 "
-bidule-e,bidule,6,organization,import-tests,test-repo-issues2,5,,Create bidule back-end,We need to create a backend with a rest API
-bidule-f,bidule,7,organization,import-tests,test-repo-issues2,5,,Create bidule front-end UI,We need to create a frontend with a web UI
-,,,organization,import-tests,test-repo-issues2,,,"Plain issue, no project",Plain
-,,9,organization,import-tests,test-repo-issues2,6,biz,"Plain issue, in project 2",Plain 2
-meta,,10,organization,import-tests,test-repo-issues2,6,boz ,"Meta issue, in project 2, no sub",Plain 3
-metasub,meta,,organization,import-tests,test-repo-issues2,6,,"Meta issue, NO project with sub",Meta plain
-metasub-subissue,metasub,,organization,import-tests,test-repo-issues2,6,    ,"Sub issue, NO project with sub",Sub plain
-truc,,,organization,import-tests,test-repo-issues1,6,,Create truc application NO project ,"The goal of this main issue is to create a new truc app.
+bidule-e,bidule,6,organization,import-tests,test-repo-issues2,project-5,5,,,Create bidule back-end,We need to create a backend with a rest API
+bidule-f,bidule,7,organization,import-tests,test-repo-issues2,project-5,5,,,Create bidule front-end UI,We need to create a frontend with a web UI
+,,,organization,import-tests,test-repo-issues2,,,,,"Plain issue, no project",Plain
+,,9,organization,import-tests,test-repo-issues2,project-6,6,,biz,"Plain issue, in project 2",Plain 2
+meta,,10,organization,import-tests,test-repo-issues2,project-6,6,,boz ,"Meta issue, in project 2, no sub",Plain 3
+metasub,meta,,organization,import-tests,test-repo-issues2,project-6,6,,,"Meta issue, NO project with sub",Meta plain
+metasub-subissue,metasub,,organization,import-tests,test-repo-issues2,project-6,6,,    ,"Sub issue, NO project with sub",Sub plain
+truc,,,organization,import-tests,test-repo-issues1,project-6,6,,,Create truc application NO project ,"The goal of this main issue is to create a new truc app.
 There are multiple items we need to  complete for that:"
-truc-d,truc,,organization,import-tests,test-repo-issues1,6,bur,Design truc data model NO project ,"A truc has two fields as follow:
+truc-d,truc,,organization,import-tests,test-repo-issues1,project-6,6,,bur,Design truc data model NO project ,"A truc has two fields as follow:
 - [ ] foo
 - [ ] bar
 "
-truc-e,truc,,organization,import-tests,test-repo-issues2,6,,Create truc back-end NO project ,We need to create a backend with a rest API
-truc-f,truc,,organization,import-tests,test-repo-issues2,6,,Create truc front-end UI NO project ,We need to create a frontend with a web UI
+truc-e,truc,,organization,import-tests,test-repo-issues2,project-6,6,,,Create truc back-end NO project ,We need to create a backend with a rest API
+truc-f,truc,,organization,import-tests,test-repo-issues2,project-6,6,,,Create truc front-end UI NO project ,We need to create a frontend with a web UI

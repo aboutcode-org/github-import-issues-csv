@@ -64,7 +64,7 @@ from import_issue import GITHUB_TOKEN
 @click.option(
     "--debug",
     is_flag=True,
-    help="Print raw JSON results for source project",
+    help="Print raw JSON results for source project. DO NOT COPY.",
 )
 
 @click.help_option("-h", "--help")
@@ -177,12 +177,12 @@ def copy_github_project_items_from_source_to_target(
                 project_number=target_project_number,
                 data=item_data
             )
-            item.project_item_node_id = new_item_id
+            item.item_node_id = new_item_id
 
             click.echo(f"Created item with ID {content_id} in target project: {item.url}")
 
             target_project.set_fields(
-                item_id=item.project_item_node_id,
+                item_node_id=item.item_node_id,
                 project_estimate=item.project_estimate,
                 project_id=item.project_id,
                 project_issue_id=item.project_issue_id,
