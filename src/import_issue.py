@@ -57,38 +57,22 @@ Optional Project support:
 
 - project_number: required for projects, GitHub project number in the "account_name".
 
+
 Optional Project fields support:
 
 - project_estimate: an estimate to complete as a number of days for this issue.
-  This is used to populate an "Estimate" custom project field that needs to be created first as
-  a "number" field in the project.
+  This is used to populate an "Estimate" custom project field that needs to be created first as a
+  "number" field in the project.
 
-Optional Meta issues support:
+Optional Issues and Subissues support:
 
-We can import plain issues as well as "meta issues". A meta issue body contains a bulleted list of
-checkboxes with links to all its "sub issues". GitHub recognizes these links as "tasks".
+- project_id: Field must exist with ProjectID
+- project_issue_id: Field must exist with IssueID
+- project_parent_issue_id: used to create subissues. Not imported.
 
-We use three columns for meta issues and their sub issues:
 
-- "meta_issue_id": arbitrary meta issue id string, used to relate "sub issues" to a "meta issue".
-- "sub_issue_id": arbitrary sub issue id string used to uniquely identify a sub issue within a meta issue.
-
-With meta issues, a row can have:
-
-- no "meta_issue_id": this is a plain issue, e.g., neither a meta nor a subissue.
-
-- only a "meta_issue_id" value and no "sub_issue_id" value: this means this is a "meta issue" row.
-  This meta_issue_id must be unique across all other meta issue rows.
-
-- a "meta_issue_id" and a "sub_issue_id" value: this means this is a "sub issue" row for the meta
-  issue of this "meta_issue_id". The combo of meta_issue_id and sub_issue_id must be
-  unique across all issue rows.
-
-For meta issues, the body will be extended with a bulleted list of links to sub issues.
-
-If the GitHub project has an IssueID custom field:
-- For meta issues, the IssueID is updated with "meta_issue_id" value
-- For sub issues, the IssueID is updated with the combined values of "meta_issue_id-sub_issue_id"
+An issue with a project_issue_id and a project_parent_issue_id will be added as a subissue of the
+issue with an id of project_parent_issue_id
 """
 
 import csv
@@ -144,7 +128,10 @@ class RateLimiter:
         self.requests.append(now)
 
 
-rate_limiter = RateLimiter(max_requests=RATE_LIMIT_MAX_REQUESTS, time_frame=RATE_LIMIT_TIME_FRAME)
+rate_limiter = RateLimiter(
+    max_requests=RATE_LIMIT_MAX_REQUESTS,
+    time_frame=RATE_LIMIT_TIME_FRAME,
+)
 
 
 def handle_rate_limit(response):
@@ -183,65 +170,182 @@ def check_rate_limit_status(response):
 
     if all([limit, remaining, used, reset, resource]):
         reset_time = datetime.fromtimestamp(int(reset)).strftime('%Y-%m-%d %H:%M:%S')
-        if not int(used) % 10:
-            click.echo(f"Rate Limit Status: used: {used}: remaining: {remaining}/{limit}/ Reset Time: {reset_time} Resource: {resource}")
+        if not VERBOSE:
+            if not int(used) % 10:
+                click.echo(
+                    f"Rate Limit Status: used: {used} "
+                    f"remaining: {remaining}/{limit} "
+                    f"Reset Time: {reset_time} Resource: {resource}"
+                )
+        else:
+            click.echo(
+                f"Rate Limit Status: used: {used} "
+                f"remaining: {remaining}/{limit} "
+                f"Reset Time: {reset_time} Resource: {resource}"
+            )
+
     else:
         click.echo("Rate limit information not available in the response headers.")
 
 
 @dataclasses.dataclass(kw_only=True)
-class Issue:
-    """
-    A GitHub issue with is title and body.
-    """
+class Item:
+    """An issue or PR"""
 
     # Do not set: the issue number, automatically set upon creation
     number: int = 0
     # Do not set: used in graphql, automatically set upon creation
-    issue_node_id: str = ""
-
-    # Required
-    title: str = ""
-    body: str = ""
+    # this is for the Issue or PR node
+    node_id: str = ""
 
     # one of user or organization
     account_type: str = "organization"
     account_name: str = ""
     repo_name: str = ""
 
-    # list of label strings
-    labels: list["str"] = dataclasses.field(default_factory=list)
-
     # Optional fields, if we add the issue to a GitHub project
     project_number: int = 0
 
     # Do not set: used in graphql, automatically set upon creation
-    project_item_id: str = ""
+    # this is for the Item node
+    project_item_node_id: str = ""
+
+    title: str = ""
+
+    # Optional:
+    status: str = ""
 
     # Optional:
     project_estimate: int = 0
 
     # Optional:
-    # an arbitrary string used to identify this issue is this project( note the same as the issue id e.g., its number)
+    # an arbitrary string used to identify this project ( NOT the same as the GH project id e.g., its number)
+    project_id: str = ""
+
+    # Optional:
+    # an arbitrary string used to identify this issue is this project( NOT the same as the issue id e.g., its number)
     project_issue_id: str = ""
 
     # Optional:
     # an arbitrary string used to identify a parent "project_issue_id" for this issue.
     # This issue will be added to the parent as subissue id.
     project_parent_issue_id: str = ""
-    #
+
+    # Optional:
+    full_url: str = ""
+
+    def __post_init__(self):
+        assert self.account_type in ("user", "organization") , f"Invalid account type: {self!r}"
+        assert self.account_name, f"Missing account name: {self!r}"
+        assert self.repo_name, f"Missing repo name: {self!r}"
+
+        if any([self.project_estimate, self.project_issue_id, self.project_id, self.project_parent_issue_id]):
+            assert self.project_number
+
+    @classmethod
+    def from_data(cls, account_type, account_name, project_number, data):
+        """
+        Create and return an object from an item ``data`` mapping as retrieved from
+        Project.get_items().
+
+        Sample data:
+         {
+            "id": "PVTI_lADOBamaz84Au48hzgWElNY",
+            "project_id": {
+              "text": "fast-scan"
+            },
+            "issue_id": {
+              "text": "fast-scan-t3-b"
+            },
+            "estimate": {
+              "number": 1.0
+            },
+            "status": {
+              "name": "In progress"
+            },
+            "content": {
+              "id": "I_kwDOAkmH2s6lEfBX",
+              "number": 4069,
+              "title": "fast-scan: Release ScanCode.io",
+              "url": "https://github.com/aboutcode-org/scancode-toolkit/issues/4069",
+              "updatedAt": "2025-01-05T19:28:51Z",
+              "assignees": {
+                "nodes": []
+              },
+              "labels": {
+                "nodes": []
+              }
+            }
+          }
+        """
+        content = data["content"]
+
+        number = content["number"]
+        node_id = content["id"]
+
+        item_id = data["id"]
+
+        project_id = (data.get("project_id") or {}).get("text") or ""
+        issue_id = (data.get("issue_id") or {}).get("text") or ""
+        estimate = (data.get("estimate") or {}).get("number") or 0
+        estimate = int(estimate)
+        status = (data.get("status") or {}).get("name") or ""
+
+        title = content.get("title") or ""
+        url = content["url"]
+        # >>> "https://github.com/aboutcode-org/scancode-toolkit/issues/4059".split("/")
+        # ['https:', '', 'github.com', 'aboutcode-org', 'scancode-toolkit', 'issues', '4059']
+        repo_name = url.split("/")[-3]
+        return cls(
+            # standard fields
+            number=number,
+            node_id=node_id,
+            title=title,
+            account_type=account_type,
+            account_name=account_name,
+            repo_name=repo_name,
+
+            project_number=project_number,
+            project_item_node_id=item_id,
+
+            # custom fields
+            status=status,
+            project_estimate=estimate,
+            project_id=project_id,
+            project_issue_id=issue_id,
+            full_url=url
+
+        )
+
+    @property
+    def url(self):
+        return self.full_url
+
+
+class PullRequest(Item):
+
+    @property
+    def url(self):
+        return f"https://github.com/{self.account_name}/{self.repo_name}/pulls/{self.number}"
+
+
+@dataclasses.dataclass(kw_only=True)
+class Issue(Item):
+    """
+    A GitHub issue with is title and body.
+    """
+    # Required
+    body: str = ""
+
+    # list of label strings
+    labels: list["str"] = dataclasses.field(default_factory=list)
+
     # Do not set: used for sub issues, automatically populated. The value is a project_issue_id
     project_subissue_ids: List[str] = dataclasses.field(default_factory=list)
 
     def __post_init__(self):
         assert self.title, f"Missing title: {self!r}"
         assert self.body, f"Missing body: {self!r}"
-        assert self.account_type in ("user", "organization") , f"Invalid account type: {self!r}"
-        assert self.account_name, f"Missing account name: {self!r}"
-        assert self.repo_name, f"Missing repo name: {self!r}"
-
-        if any([self.project_estimate, self.project_issue_id, self.project_parent_issue_id]):
-            assert self.project_number
 
     @property
     def url(self):
@@ -251,20 +355,7 @@ class Issue:
         """Return the body. Subclasses can override"""
         return self.body
 
-    def get_fields_as_labels(self):
-        """
-        Return a list of labels constructed from the fields for issue id, parent id and estimate
-        """
-        labels = []
-        if project_estimate := self.project_estimate:
-            labels.append(f"estimate:{project_estimate}")
-        if project_issue_id := self.project_issue_id:
-            labels.append(f"issue_id:{project_issue_id}")
-        # if project_parent_issue_id := self.project_parent_issue_id:
-        #     labels.append(f"parent_id:{project_parent_issue_id}")
-        return labels
-
-    def create(self, headers=auth_headers, retries=0, create_labels_for_fields=False):
+    def create(self, headers=auth_headers, retries=0):
         """
         Create issue at GitHub and update thyself.
         NB: this does not check if the same issue already exists.
@@ -273,8 +364,6 @@ class Issue:
         api_url = f"https://api.github.com/repos/{self.account_name}/{self.repo_name}/issues"
         request_data = {"title": self.title, "body": self.get_body()}
         labels = self.labels or []
-        if create_labels_for_fields:
-            labels.extend(self.get_fields_as_labels())
 
         if labels:
             request_data["labels"] = labels
@@ -289,7 +378,6 @@ class Issue:
                 self.create(
                     headers=headers,
                     retries=retries,
-                    create_labels_for_fields=create_labels_for_fields,
                 )
                 return
         except Exception as e:
@@ -305,7 +393,7 @@ class Issue:
         results = response.json()
         self.number = results["number"]
         # this is needed for further GraphQL queries and mutations
-        self.issue_node_id = results["node_id"]
+        self.node_id = results["node_id"]
 
     def add_subissue(self, subissue, headers=auth_headers, retries=0):
         """
@@ -316,7 +404,7 @@ class Issue:
         self.fail_if_not_created()
         subissue.fail_if_not_created()
 
-        variables = {"issue_node_id": self.issue_node_id, "subissue_node_id": subissue.issue_node_id}
+        variables = {"issue_node_id": self.node_id, "subissue_node_id": subissue.issue_node_id}
 
         query = """mutation($issue_node_id:ID!, $subissue_node_id:ID!) {
             addSubIssue(input: {issueId: $issue_node_id, subIssueId: $subissue_node_id}) {
@@ -329,10 +417,10 @@ class Issue:
     def fail_if_not_created(self):
         assert self.number, f"Issue: {self.title} must be created first at GitHub"
 
-    def add_to_project(self, create_labels_for_fields=False, _combined_update=True):
+    def add_to_project(self):
         """
         Add this issue to its project, if this issue has a "project_number".
-        Update project fields: estimate, issue_id and parent_issue_id
+        Update project fields: estimate, issue_id and project_id
         """
         self.fail_if_not_created()
         project = self.get_project()
@@ -341,32 +429,13 @@ class Issue:
 
         project.add_issue(issue=self)
 
-        # stop now if we are not using project fields
-        if create_labels_for_fields:
-            return
-
-        # make only a single graphql request to update all fields at once
-        if _combined_update:
-            update_project_issue_fields(
-                project=project,
-                item_id=self.project_item_id,
-                project_estimate=self.project_estimate or 0,
-                project_issue_id=self.project_issue_id,
-                project_parent_issue_id=self.project_parent_issue_id,
-            )
-
-        else:
-            # Update estimate field, if present
-            if project_estimate := self.project_estimate:
-                project.update_number_field(item_id=self.project_item_id, field_name="Estimate", value=project_estimate)
-
-            # Update IssueID if we have issueid id fields
-            if project_issue_id := self.project_issue_id:
-                project.update_text_field(item_id=self.project_item_id, field_name="IssueID", value=project_issue_id)
-
-            # Update isparent if we have isparent fields
-            if project_parent_issue_id := self.project_parent_issue_id:
-                project.update_text_field(item_id=self.project_item_id, field_name="ParentIssueID", value=project_parent_issue_id)
+        project.update_project_issue_fields(
+            project=project,
+            item_id=self.project_item_node_id,
+            project_estimate=self.project_estimate or 0,
+            project_issue_id=self.project_issue_id,
+            project_id=self.project_id,
+        )
 
     def get_project(self):
         """
@@ -379,15 +448,15 @@ class Issue:
                 account_name=self.account_name,
             )
 
-    def create_issue_and_add_to_project(self, create_labels_for_fields=False):
+    def create_issue_and_add_to_project(self):
         """
         Create this Issue at GitHub and add to project.
         """
-        self.create(create_labels_for_fields=create_labels_for_fields)
+        self.create()
         click.echo(f"Created Issue: URL: {self.url} - {self.title} ", nl="")
         project = self.get_project()
         if project:
-            self.add_to_project(create_labels_for_fields=create_labels_for_fields)
+            self.add_to_project()
             click.echo(f"... and added to Project: {project.url}")
         else:
             click.echo("")
@@ -417,6 +486,7 @@ class Issue:
             # force int
             project_estimate=int(data.get("project_estimate", "").strip() or 0),
 
+            project_id=data.get("project_id", "").strip() or "",
             project_issue_id=data.get("project_issue_id", "").strip() or "",
             project_parent_issue_id=data.get("project_parent_issue_id", "").strip() or "",
         )
@@ -455,20 +525,25 @@ def graphql_query(query, variables=None, headers=auth_headers, retries=0):
 
     check_rate_limit_status(response)
 
-    results = response.json()
-    if 'errors' in results:
+    if response.status_code == 200:
+        results = response.json()
+        if 'errors' in results:
+            raise Exception(
+                f"GraphQL query error: {results['errors']}\n\n"
+                f"query: {query}\n"
+                f"variables: {variables}"
+            )
+        return results
+    else:
         raise Exception(
-            f"GraphQL query error: {results['errors']}\n\n"
-            f"query: {query}\n"
-            f"variables: {variables}"
+            f"Query failed with status code {response.status_code}. Response: {response.text}"
         )
-    return results
 
 
 @dataclasses.dataclass(kw_only=True)
 class Project:
     """
-    A GitHub project, identified by its project number  in a GitHub account.
+    A GitHub project, identified by its project number in a GitHub account.
     """
     # a cache of all projects, keyed by number
     projects_by_number = {}
@@ -482,6 +557,9 @@ class Project:
 
     # {name -> field_node_id} mapping for the project "plain" fields (text, date and numbers).
     fields: Dict[str, str] = dataclasses.field(default_factory=dict)
+
+    # {name -> {option name: option _node_id} mapping for the project singleselect fields
+    field_options: Dict[str, Dict[str, str]] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self):
         assert self.number
@@ -510,28 +588,94 @@ class Project:
         cls.projects_by_number[number] = project
         return project
 
+    def create_item(self, content_id):
+        """
+        Create item with ``content_id`` in this project at GitHub. Return the created item id.
+        """
+        query = """
+        mutation($project_id: ID!, $content_id: ID!) {
+            addProjectV2ItemById(input: {projectId: $project_id, contentId: $content_id}) {
+                item {
+                    id
+                }
+            }
+        }
+        """
+        variables = {"project_id": self.get_project_id(), "content_id": content_id}
+        results = graphql_query(query=query, variables=variables)
+        return results["data"]["addProjectV2ItemById"]["item"]["id"]
+
     def add_issue(self, issue):
         """
         Add Issue ``issue`` to this project at GitHub. Update the issue fields in place.
         The issue must have been created first.
         """
         issue.fail_if_not_created()
+        content_id = issue.node_id
+        issue.project_item_node_id = self.create_item(content_id)
 
-        query = """mutation($project_id:ID!, $issue_node_id:ID!) {
-            addProjectV2ItemById(input: {projectId: $project_id, contentId: $issue_node_id })
-            {
-                item { id }
+    def create_draft_issue(self, title, body):
+        """
+        Create draft issue item with ``title``  and ``body`` in this project at GitHub.
+        Return the created item id.
+        """
+        query = """
+        mutation($project_id: ID!, $title: String!, $body: String!) {
+            addProjectV2DraftIssue(input: {projectId: $project_id, title: $title, body: $body}) {
+                projectItem {
+                    id
+                }
             }
         }
         """
-
-        project_id = self.get_project_id()
-        variables = {"project_id": project_id, "issue_node_id": issue.issue_node_id}
-
+        variables = {"project_id": self.get_project_id()}
         results = graphql_query(query=query, variables=variables)
-        issue.project_item_id = results["data"]["addProjectV2ItemById"]["item"]["id"]
+        return results["data"]["addProjectV2DraftIssue"]["projectItem"]["id"]
+
+    def set_fields(
+        self,
+        item_id,
+        project_estimate,
+        project_id,
+        project_issue_id,
+        status="",
+    ):
+        """
+        Update multiple fields  of this self item with ``item_id``.
+
+        The fields are hardcoded: ``project_estimate`` , ``project_isssue_id`` and ``project_id`` .
+        This is designed to work on a multiple fields at once to avoid hitting rate limit too quickly.
+        """
+        assert item_id
+
+        variables = {
+            "project_id": self.get_project_id(),
+            "item_id": item_id,
+            "estimate_field_id": self.get_field_id("Estimate"),
+            "estimate_value": project_estimate or 0,
+            "issue_id_field_id": self.get_field_id("IssueID"),
+            "issue_id_value": project_issue_id or "",
+            "project_id_field_id": self.get_field_id("ProjectID"),
+            "project_id_value": project_id or "",
+        }
+        with_status = bool(status)
+        if with_status:
+            variables.update({
+            "status_field_id": self.get_field_id("Status"),
+            "status_value": self.get_field_option_id(field_name="Status", option_name=status) or "",
+        })
+
+        query = get_fields_update_query(with_status=with_status)
+        try:
+            graphql_query(query=query, variables=variables)
+        except:
+            click.echo(variables)
+            raise
 
     def get_project_id(self):
+        """
+        Return (through a cache) the remote GH project id
+        """
         self.populate_project_id()
         return self.project_id
 
@@ -555,14 +699,20 @@ class Project:
         self.project_id = results['data'][self.account_type]['projectV2']['id']
 
     def get_field_id(self, field_name):
-        self.populate_field_names_by_id()
+        self.populate_field_ids_by_name()
         return self.fields[field_name]
 
-    def populate_field_names_by_id(self):
+    def get_field_option_id(self, field_name, option_name):
+        self.populate_field_ids_by_name()
+        return self.field_options[field_name].get(option_name)
+
+    def populate_field_ids_by_name(self):
         """
         Fetch and cache this project field names and node ids. This is a {name -> field_node_id}
         mapping for the project "plain" fields (text, date and numbers). This ignores field
-        typename, datatype, and skip special fields like iterations and select.
+        typename, datatype, and skip most special field types like iterations.
+
+        SingleSelect are tracked with field_options (like the important Status)
         """
         if self.fields:
             return
@@ -572,7 +722,19 @@ class Project:
                 ... on ProjectV2 {
                     fields(first: 20) {
                         nodes {
-                            ... on ProjectV2Field { id name }
+                            ... on ProjectV2Field {
+                                id
+                                name
+                            }
+                            ... on ProjectV2SingleSelectField {
+                                id
+                                name
+                                options {
+                                    id
+                                    name
+                                }
+                            }
+
                         }
                     }
                 }
@@ -602,322 +764,240 @@ class Project:
         # }
         # """
 
+        fields = {}
+        field_options = {}
+
         for field in results["data"]["node"]["fields"]["nodes"]:
             # Some non-plain fields can be empty mappings
             # better be safe
-            if field and (name := field.get("name")) and (field_id := field.get("id")):
-                self.fields[name] = field_id
+            if not field:
+                continue
+            name = field.get("name")
+            field_id = field.get("id")
+            if not name or not field_id:
+                continue
+            fields[name] = field_id
+            options = field.get("options") or {}
+            if options:
+                optid_by_name = {opt["name"]: opt["id"] for opt in options}
+                field_options[name] = optid_by_name
 
-    def update_number_field(self, item_id, field_name, value):
+        self.fields = fields
+        self.field_options = field_options
+        return fields
+
+    def get_items(self, with_full_content=False, with_iteration=False):
         """
-        Update a "number" field.
+        Return a list of all items in this project
+        This includes issues, pull requests and draft issues.
+        Paginate as needed.
         """
-        update_field(
-            project=self,
-            item_id=item_id,
-            field_name=field_name,
-            value=float(value),
-            query=UPDATE_NUMBER_MUTATION_QUERY,
-        )
+        all_items = []
 
-    def update_text_field(self, item_id, field_name, value):
+        has_next_page = True
+        cursor = None
+
+        full_content = """
+                      content {
+                        ... on DraftIssue {
+                          title
+                          body
+                        }
+                        ... on Issue {
+                          id
+                          number
+                          title
+                          url
+                          updatedAt
+                          assignees(first: 10) {
+                            nodes {
+                              login
+                            }
+                          }
+                          labels(first: 10) {
+                            nodes {
+                              name
+                            }
+                          }
+                        }
+                        ... on PullRequest {
+                          id
+                          number
+                          title
+                          url
+                          updatedAt
+                          assignees(first: 10) {
+                            nodes {
+                              login
+                            }
+                          }
+                          labels(first: 10) {
+                            nodes {
+                              name
+                            }
+                          }
+                        }
+                      }
         """
-        Update a "string/text" field.
+
+        mini_content = """
+                      content {
+                        ... on Issue {
+                          id
+                          number
+                          url
+                        }
+                        ... on PullRequest {
+                          id
+                          number
+                          url
+                        }
+                      }
         """
-        update_field(
-            project=self,
-            item_id=item_id,
-            field_name=field_name,
-            value=str(value),
-            query=UPDATE_TEXT_MUTATION_QUERY,
-        )
 
+        iteration = """
+                    iteration: fieldValueByName(name: "Iteration") {
+                      ... on ProjectV2ItemFieldIterationValue {
+                        title
+                        startDate
+                        duration
+                      }
+                    }
+        """
 
-UPDATE_NUMBER_MUTATION_QUERY = """mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $value:Float!) {
-    updateProjectV2ItemFieldValue(input: {
-        projectId: $project_id
-        itemId: $item_id
-        fieldId: $field_id
-        value: { number: $value }
-    })
-    { projectV2Item { id } }
-}
-"""
-
-UPDATE_TEXT_MUTATION_QUERY = """mutation($project_id:ID!, $item_id:ID!, $field_id:ID!, $value:String!) {
-    updateProjectV2ItemFieldValue(input: {
-        projectId: $project_id
-        itemId: $item_id
-        fieldId: $field_id
-        value: { text: $value }
-    })
-    { projectV2Item { id } }
-}
-"""
-
-UPDATE_ESTIMATE_MUTATION_QUERY = """
-    mutation(
-        $project_id:ID!,
-        $item_id:ID!,
-
-        $estimate_field_id:ID!,
-        $estimate_value:Float!,
-
-    ) {
-        update_estimate: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $estimate_field_id
-                value: { number: $estimate_value }
+        while has_next_page:
+            query = ("""
+            query($projectId: ID!, $cursor: String) {
+              node(id: $projectId) {
+                ... on ProjectV2 {
+                  items(first: 100, after: $cursor) {
+                    pageInfo {
+                      hasNextPage
+                      endCursor
+                    }
+                    nodes {
+                      id
+                      project_id: fieldValueByName(name: "ProjectID") {
+                        ... on ProjectV2ItemFieldTextValue {
+                          text
+                        }
+                      }
+                      issue_id: fieldValueByName(name: "IssueID") {
+                        ... on ProjectV2ItemFieldTextValue {
+                          text
+                        }
+                      }
+                      estimate: fieldValueByName(name: "Estimate") {
+                        ... on ProjectV2ItemFieldNumberValue {
+                          number
+                        }
+                      }
+                      status: fieldValueByName(name: "Status") {
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          name
+                        }
+                      }
+                      %s
+                      %s
+                    }
+                  }
+                }
+              }
             }
-        )
-        { projectV2Item { id } }
+            """ % (
+                full_content  if with_full_content else mini_content,
+                iteration if with_iteration else ""
+                )
+            )
+            variables = {"projectId": self.get_project_id(), "cursor": cursor}
+            results = graphql_query(query=query, variables=variables)
 
-    }
-"""
+            items = results["data"]["node"]["items"]
 
-UPDATE_ISSUEID_MUTATION_QUERY = """
-    mutation(
-        $project_id:ID!,
-        $item_id:ID!,
+            all_items.extend(items["nodes"])
 
-        $issue_id_field_id:ID!,
-        $issue_id_value:String!
-    ) {
-        update_issue_id: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $issue_id_field_id
-                value: { text: $issue_id_value }
-            }
-        )
-        { projectV2Item { id } }
-    }
-"""
+            page_info = items["pageInfo"]
+            has_next_page = page_info["hasNextPage"]
+            cursor = page_info["endCursor"]
 
-UPDATE_PARENTISSUEID_MUTATION_QUERY = """
-    mutation(
-        $project_id:ID!,
-        $item_id:ID!,
-
-        $parent_issue_id_field_id:ID!,
-        $parent_issue_id_value:String!
-    ) {
-        update_parent_issue_id: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $parent_issue_id_field_id
-                value: { text: $parent_issue_id_value }
-            }
-        )
-        { projectV2Item { id } }
-    }
-"""
-
-UPDATE_ESTIMATE_AND_ISSUEID_MUTATION_QUERY = """
-    mutation(
-        $project_id:ID!,
-        $item_id:ID!,
-
-        $estimate_field_id:ID!,
-        $estimate_value:Float!,
-
-        $issue_id_field_id:ID!,
-        $issue_id_value:String!
-    ) {
-        update_estimate: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $estimate_field_id
-                value: { number: $estimate_value }
-            }
-        )
-        { projectV2Item { id } }
-
-        update_issue_id: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $issue_id_field_id
-                value: { text: $issue_id_value }
-            }
-        )
-        { projectV2Item { id } }
-    }
-"""
-
-UPDATE_ISSUEID_AND_PARENTISSUEID_MUTATION_QUERY = """
-    mutation(
-        $project_id:ID!,
-        $item_id:ID!,
-
-        $issue_id_field_id:ID!,
-        $issue_id_value:String!,
-
-        $parent_issue_id_field_id:ID!,
-        $parent_issue_id_value:String!
-
-    ) {
-        update_issue_id: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $issue_id_field_id
-                value: { text: $issue_id_value }
-            }
-        )
-        { projectV2Item { id } }
-
-        update_parent_issue_id: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $parent_issue_id_field_id
-                value: { text: $parent_issue_id_value }
-            }
-        )
-        { projectV2Item { id } }
-
-    }
-"""
-
-UPDATE_ESTIMATE_ISSUEID_PARENTISSUEID_MUTATION_QUERY = """
-    mutation(
-        $project_id:ID!,
-        $item_id:ID!,
-
-        $estimate_field_id:ID!,
-        $estimate_value:Float!,
-
-        $issue_id_field_id:ID!,
-        $issue_id_value:String!,
-
-        $parent_issue_id_field_id:ID!,
-        $parent_issue_id_value:String!
-
-    ) {
-        update_estimate: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $estimate_field_id
-                value: { number: $estimate_value }
-            }
-        )
-        { projectV2Item { id } }
-
-        update_issue_id: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $issue_id_field_id
-                value: { text: $issue_id_value }
-            }
-        )
-        { projectV2Item { id } }
-
-        update_parent_issue_id: updateProjectV2ItemFieldValue(
-            input: {
-                projectId: $project_id
-                itemId: $item_id
-                fieldId: $parent_issue_id_field_id
-                value: { text: $parent_issue_id_value }
-            }
-        )
-        { projectV2Item { id } }
-
-    }
-"""
+        return all_items
 
 
-def update_project_issue_fields(
-    project,
-    item_id,
-    project_estimate,
-    project_issue_id,
-    project_parent_issue_id,
-):
+def get_fields_update_query(with_status=False):
+
+    status_vars = """
+            ,
+            $status_field_id:ID!,
+            $status_value:String!
+            """
+
+    status_update = """
+            update_status_id: updateProjectV2ItemFieldValue(
+                input: {
+                    projectId: $project_id
+                    itemId: $item_id
+                    fieldId: $status_field_id
+                    value: { singleSelectOptionId: $status_value }
+                }
+            )
+            { projectV2Item { id } }
     """
-    Update multiple fields  of the ``project`` item with ``item_id``.
 
-    The fields are hardcoded: ``project_estimate`` , ``project_isssue_id`` and ``project_parent_issue_id`` .
+    query = ("""
+        mutation(
+            $project_id:ID!,
+            $item_id:ID!,
 
-    This is designed to work on a multiple fields at once to avoid hitting rate limit too quickly.
+            $estimate_field_id:ID!,
+            $estimate_value:Float!,
 
-    """
-    # Note that this is rather ugly code, but updating multiple fields in GraphQL @ GH is ugly
-    # TODO: rector to deal with many fields automatically
+            $issue_id_field_id:ID!,
+            $issue_id_value:String!,
 
-    assert project and item_id
+            $project_id_field_id:ID!,
+            $project_id_value:String!
 
-    if not project_issue_id:
-        return
+            %s
 
-    variables = {
-        "project_id": project.get_project_id(),
-        "item_id": item_id,
-    }
-    if project_estimate and project_issue_id and project_parent_issue_id:
-        query = UPDATE_ESTIMATE_ISSUEID_PARENTISSUEID_MUTATION_QUERY
+        ) {
+            update_estimate: updateProjectV2ItemFieldValue(
+                input: {
+                    projectId: $project_id
+                    itemId: $item_id
+                    fieldId: $estimate_field_id
+                    value: { number: $estimate_value }
+                }
+            )
+            { projectV2Item { id } }
 
-    elif project_estimate and project_parent_issue_id:
-        query = UPDATE_ISSUEID_AND_PARENTISSUEID_MUTATION_QUERY
+            update_issue_id: updateProjectV2ItemFieldValue(
+                input: {
+                    projectId: $project_id
+                    itemId: $item_id
+                    fieldId: $issue_id_field_id
+                    value: { text: $issue_id_value }
+                }
+            )
+            { projectV2Item { id } }
 
-    elif project_estimate and project_issue_id:
-        query = UPDATE_ESTIMATE_AND_ISSUEID_MUTATION_QUERY
+            update_project_id: updateProjectV2ItemFieldValue(
+                input: {
+                    projectId: $project_id
+                    itemId: $item_id
+                    fieldId: $project_id_field_id
+                    value: { text: $project_id_value }
+                }
+            )
+            { projectV2Item { id } }
 
-    elif project_estimate:
-        query = UPDATE_ESTIMATE_MUTATION_QUERY
+            %s
+       }
+    """) % (
+        status_vars if with_status else "",
+        status_update if with_status else "",
+    )
 
-    elif project_issue_id:
-        query = UPDATE_ISSUEID_MUTATION_QUERY
-
-    elif project_parent_issue_id:
-        query = UPDATE_PARENTISSUEID_MUTATION_QUERY
-
-    if project_estimate:
-        variables.update(
-            {
-                "estimate_field_id": project.get_field_id("Estimate"),
-                "estimate_value": project_estimate,
-            }
-        )
-    if project_issue_id:
-        variables.update(
-            {
-                "issue_id_field_id": project.get_field_id("IssueID"),
-                "issue_id_value": project_issue_id,
-            }
-        )
-    if project_parent_issue_id:
-        variables.update(
-            {
-                "parent_issue_id_field_id": project.get_field_id("ParentIssueID"),
-                "parent_issue_id_value": project_parent_issue_id,
-            }
-        )
-    graphql_query(query=query, variables=variables)
-
-
-def update_field(project, item_id, field_name, value, query, verbose=False):
-    """
-    Update a field with ``field_name`` to ``value`` for the project item ``item_id`` using the
-    ``query`` GraphQL mutation.
-    This is designed to work on a single field
-    """
-    variables = {
-        "project_id": project.get_project_id(),
-        "item_id": item_id,
-        "field_id": project.get_field_id(field_name),
-        "value": value
-    }
-    if verbose:
-        click.echo(f"Updaing issue field: {field_name} with value: {value!r} with variables: {variables} through query: {query!r}")
-    graphql_query(query=query, variables=variables)
+    return query
 
 
 def load_issues(location, max_load=0):
@@ -968,8 +1048,7 @@ def load_issues(location, max_load=0):
                 break
 
     for parent_id, project_subissue_ids in subissues_by_parent_id.items():
-        assert (
-            parent_id in issues_by_project_issue_id,
+        assert parent_id not in issues_by_project_issue_id, (
             f"Orphaned parent_id: {parent_id!r} in sub issue ids: {project_subissue_ids!r}"
         )
         issue = issues_by_project_issue_id[parent_id]
@@ -1004,11 +1083,6 @@ def dump_csv_sample(ctx, param, value):
     help="Maximum number of issues to import. Default to zero to import all issues in FILE.",
 )
 @click.option(
-    "--create-labels-for-fields",
-    is_flag=True,
-    help="Create issues labels instead of project/issue fields for Estimate/IssueID/ParentIssueID.",
-)
-@click.option(
     "--csv-sample",
     is_flag=True,
     is_eager=True,
@@ -1017,7 +1091,7 @@ def dump_csv_sample(ctx, param, value):
     help='Dump a sample CSV on screen and exit. See also the "issues.csv" file',
 )
 @click.help_option("-h", "--help")
-def import_issues_in_github(ctx, issues_file, max_import=0, create_labels_for_fields=False):
+def import_issues_in_github(ctx, issues_file, max_import=0):
     """
     Import issues in GitHub as listed in the CSV FILE.
 
@@ -1039,10 +1113,7 @@ def import_issues_in_github(ctx, issues_file, max_import=0, create_labels_for_fi
         click.echo(f"Importing {len(issues)} issues in GitHub")
 
     for issue in issues:
-        issue.create_issue_and_add_to_project(
-            issue=issue,
-            create_labels_for_fields=create_labels_for_fields,
-        )
+        issue.create_issue_and_add_to_project()
 
     click.echo("Creating sub issues")
     # once all issues are created we can create subissues

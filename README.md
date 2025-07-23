@@ -49,7 +49,9 @@ Not supported: Nothing not listed above including
 This script read a CSV and creates GitHub issues, and add these to GitHub projects.
 You need first to install these dependencies in your virtualenv::
 
-    pip install click requests
+    python -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
 
 Then run the script this way::
 
