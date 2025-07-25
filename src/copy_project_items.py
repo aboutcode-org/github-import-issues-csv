@@ -191,6 +191,7 @@ def copy_github_project_items_from_source_to_target(
                 project_issue_id=item.project_issue_id,
                 status=item.status,
                 iteration=item.iteration,
+                target_date=item.target_date,
             )
 
         else:

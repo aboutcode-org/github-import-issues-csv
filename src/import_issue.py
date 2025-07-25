@@ -108,7 +108,7 @@ auth_headers = {
 
 # Rate limiter settingsissue_id
 # Maximum number of requests allowed within the time frame
-RATE_LIMIT_MAX_REQUESTS = 90
+RATE_LIMIT_MAX_REQUESTS = 100
 # Time frame for rate limiting in seconds
 RATE_LIMIT_TIME_FRAME = 60
 
@@ -220,14 +220,17 @@ class Item:
     # Optional:
     status: str = ""
 
-    # Optional:
+    # Optional: iteration title
     iteration: str = ""
+
+    # Optional: date in ISO format
+    target_date: str = ""
 
     # Optional:
     project_estimate: int = 0
 
     # Optional: an arbitrary string used to identify this project ( NOT the same as the GH project
-    # id e.g., its number)
+    # id e.g., its number, and NOT the node id)
     project_id: str = ""
 
     # Optional: an arbitrary string used to identify this issue is this project( NOT the same as the
@@ -287,7 +290,7 @@ class Item:
         """
         content = data["content"]
 
-        number = content["number"]
+        item_number = content["number"]
         node_id = content["id"]
 
         item_node_id = data["id"]
@@ -298,6 +301,7 @@ class Item:
         estimate = int(estimate)
         status = (data.get("status") or {}).get("name") or ""
         iteration = (data.get("iteration") or {}).get("title") or ""
+        target_date = (data.get("target_date") or {}).get("date") or ""
 
         title = content.get("title") or ""
         url = content["url"]
@@ -306,7 +310,7 @@ class Item:
         repo_name = url.split("/")[-3]
         return cls(
             # standard fields
-            number=number,
+            number=item_number,
             node_id=node_id,
             title=title,
             account_type=account_type,
@@ -319,6 +323,8 @@ class Item:
             # custom fields
             status=status,
             iteration=iteration,
+            target_date=target_date,
+
             project_estimate=estimate,
             project_id=project_id,
             project_issue_id=issue_id,
@@ -437,6 +443,7 @@ class Issue(Item):
             project_id=self.project_id,
             status=self.status or "",
             iteration=self.iteration or "",
+            target_date=self.target_date or "",
         )
 
     def get_project(self):
@@ -494,6 +501,7 @@ class Issue(Item):
             project_parent_issue_id=data.get("project_parent_issue_id", "").strip() or "",
             status=data.get("status", "").strip() or "",
             iteration=data.get("iteration", "").strip() or "",
+            target_date=data.get("target_date", "").strip() or "",
         )
 
 
@@ -653,6 +661,7 @@ class Project:
         project_issue_id,
         status="",
         iteration="",
+        target_date="",
     ):
         """
         Update multiple fields of this project item with ``item_node_id``.
@@ -691,9 +700,23 @@ class Project:
             }
             variables.update(iteration_variables)
             if DEBUG:
-                click.echo(f"Updating iIeration field: {iteration} with {iteration_variables}")
+                click.echo(f"Updating Iteration field: {iteration} with {iteration_variables}")
 
-        query = get_fields_update_query(with_status=with_status, with_iteration=with_iteration)
+        with_target_date = bool(target_date)
+        if with_target_date:
+            target_date_variables = {
+                "target_date_field_id": self.get_field_node_id("TargetDate"),
+                "target_date_value": target_date or "",
+            }
+            variables.update(target_date_variables)
+            if DEBUG:
+                click.echo(f"Updating TargetDate field: {target_date} with {target_date_variables}")
+
+        query = get_fields_update_query(
+            with_status=with_status,
+            with_iteration=with_iteration,
+            with_target_date=with_target_date,
+        )
         graphql_query(query=query, variables=variables)
 
     def get_project_node_id(self):
@@ -874,7 +897,7 @@ class Project:
 
             if not name or not field_node_id:
                 continue
-
+            # for all common field types: text, number, date
             field_ids_by_field_name[name] = field_node_id
 
             # singleselect
@@ -1002,6 +1025,11 @@ class Project:
                           title
                         }
                       }
+                      target_date: fieldValueByName(name: "TargetDate") {
+                        ... on ProjectV2ItemFieldIterationValue {
+                          date
+                        }
+                      }
 
                       %s
                     }
@@ -1026,7 +1054,7 @@ class Project:
         return all_items
 
 
-def get_fields_update_query(with_status=False, with_iteration=False):
+def get_fields_update_query(with_status=False, with_iteration=False, with_target_date=False):
 
     status_vars = """
             $status_field_id:ID!
@@ -1062,6 +1090,23 @@ def get_fields_update_query(with_status=False, with_iteration=False):
             { projectV2Item { id } }
     """ if with_iteration else ""
 
+    target_date_vars = """
+            $target_date_field_id:ID!
+            $target_date_value:Date!
+            """ if with_target_date else ""
+
+    target_date_update = """
+            update_target_date_id: updateProjectV2ItemFieldValue(
+                input: {
+                    projectId: $project_node_id
+                    itemId: $item_node_id
+                    fieldId: $target_date_field_id
+                    value: { date: $target_date_value }
+                }
+            )
+            { projectV2Item { id } }
+    """ if with_target_date else ""
+
     query = ("""
         mutation(
             $project_node_id:ID!
@@ -1077,7 +1122,7 @@ def get_fields_update_query(with_status=False, with_iteration=False):
             $project_id_value:String!
 
             %s
-
+            %s
             %s
         ) {
             update_estimate: updateProjectV2ItemFieldValue(
@@ -1111,14 +1156,17 @@ def get_fields_update_query(with_status=False, with_iteration=False):
             { projectV2Item { id } }
 
             %s
-
+            %s
             %s
        }
     """) % (
         status_vars,
         iteration_vars,
+        target_date_vars,
+
         status_update ,
         iteration_update ,
+        target_date_update,
     )
 
     return query
