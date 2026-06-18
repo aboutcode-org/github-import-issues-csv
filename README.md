@@ -55,7 +55,7 @@ You need first to install these dependencies in your virtualenv::
 
 Then run the script this way::
 
-    python src/import_issues.py --help
+    python src/import_issue.py --help
 
 You need to have pre-existing repositories and projects created in GitHub.
 
