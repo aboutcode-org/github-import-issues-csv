@@ -33,9 +33,9 @@ You need first to install these dependencies in your virtualenv::
 
     pip install click requests
 
-Then run this way::
+Then run this way:
 
-    python src/import_issues.py --help
+    python src/import_issue.py --help
 
 You need to have:
 - pre-existing repositories and projects created in GitHub, with optional fields if needed,
