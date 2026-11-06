@@ -392,7 +392,7 @@ class Issue(Item):
                 f"Failed to create issue: {self!r}\n"
                 f"  with api_url: {api_url}\n"
                 f"  with request: {request_data}\n"
-                f"  and response: {response}"
+                f"  and response: {response!r}"
             ) from e
 
         check_rate_limit_status(response)
