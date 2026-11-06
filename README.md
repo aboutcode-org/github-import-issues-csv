@@ -43,7 +43,7 @@ Not supported: Nothing not listed above including
 #### Prerequisites
 
 - Python 3.x installed on your system.
-- A GitHub personal access token with `repo` permissions exported as a GITHUB_TOKEN variable
+- A GitHub personal access token with `repo` permissions exported as a GITHUB_TOKEN environment variable.
 - A CSV file containing task information to upload.
 
 This script read a CSV and creates GitHub issues, and add these to GitHub projects.
